@@ -1,0 +1,60 @@
+{
+    "name": "labrodev/kalimera",
+    "description": "Interactive installer that scaffolds Laravel applications the Labrodev way.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["laravel", "installer", "scaffolding", "labrodev"],
+    "authors": [
+        {
+            "name": "Petro Lashyn",
+            "email": "contact@labrodev.com"
+        }
+    ],
+    "require": {
+        "php": "^8.4",
+        "laravel/prompts": "^0.3",
+        "symfony/process": "^7.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.20",
+        "pestphp/pest": "^4.0",
+        "phpstan/phpstan": "^2.0",
+        "rector/rector": "^2.0",
+        "mockery/mockery": "^1.6"
+    },
+    "scripts": {
+        "phpstan": "vendor/bin/phpstan analyse",
+        "phpstan-clear": "vendor/bin/phpstan clear-result-cache",
+        "pint:dry": "vendor/bin/pint --test",
+        "pint:fix": "vendor/bin/pint",
+        "rector:dry": "vendor/bin/rector --dry-run",
+        "rector:fix": "vendor/bin/rector process",
+        "test": "vendor/bin/pest",
+        "quality": [
+            "@rector:dry",
+            "@pint:dry",
+            "@phpstan",
+            "@test"
+        ]
+    },
+    "autoload": {
+        "psr-4": {
+            "Kalimera\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kalimera\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "bin": [
+        "bin/kalimera"
+    ],
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

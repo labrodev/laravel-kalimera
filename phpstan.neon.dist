@@ -1,0 +1,11 @@
+includes:
+    - vendor/pestphp/pest/extension.neon
+    - vendor/pestphp/pest/phpstan-pest-extension.neon
+
+parameters:
+    level: 8
+
+    paths:
+        - src
+        - bin
+        - tests

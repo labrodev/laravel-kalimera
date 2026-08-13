@@ -1,0 +1,90 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Kalimera installer configuration",
+    "description": "Overrides for kalimera's preselected answers and the additional-packages catalog. Every key is optional — anything omitted keeps the built-in setup shown in the default values. The enums list the available options; kalimera validates the file on start.",
+    "type": "object",
+    "properties": {
+        "preselected": {
+            "description": "Pre-chosen answers for the prompts: what the interactive selects start with, and exactly what --defaults installs unattended. coreNamespace null skips the Core structure scaffold.",
+            "type": "object",
+            "properties": {
+                "starterKit": {
+                    "enum": ["react", "vue", "livewire", "svelte", "none"]
+                },
+                "aroundPackages": {
+                    "items": {
+                        "enum": ["horizon", "fortify", "ai", "nightwatch"]
+                    }
+                },
+                "sailServices": {
+                    "items": {
+                        "enum": ["pgsql", "redis", "mysql", "mailpit", "meilisearch", "minio"]
+                    }
+                },
+                "qualityTools": {
+                    "items": {
+                        "enum": ["pint", "phpstan", "rector"]
+                    }
+                },
+                "boostAgents": {
+                    "items": {
+                        "enum": ["claude_code", "cursor", "codex", "copilot", "junie", "zed", "opencode", "amp", "antigravity", "kiro", "factory", "pi", "grok_build"]
+                    }
+                }
+            },
+            "default": {
+                "starterKit": "react",
+                "installInertia": false,
+                "aroundPackages": ["horizon", "fortify", "ai", "nightwatch"],
+                "sailServices": ["pgsql", "redis"],
+                "phpConstraint": "^8.5",
+                "qualityTools": ["pint", "phpstan", "rector"],
+                "installPostmark": false,
+                "coreNamespace": "Core",
+                "boostAgents": ["claude_code", "cursor", "codex"],
+                "boostSkillRepos": [],
+                "extraPackages": [],
+                "extraDevPackages": []
+            }
+        },
+        "additionalPackages": {
+            "description": "The catalog offered by the \"additional packages\" prompt. Each entry: package (required, version constraint allowed), label, dev, preselected, publishProviders — \"preselected\": true is what --defaults installs. Setting this key replaces the built-in catalog below.",
+            "type": "array",
+            "default": [
+                {
+                    "package": "spatie/laravel-data",
+                    "label": "laravel-data — DTOs & validation (replaces Request classes)",
+                    "publishProviders": ["Spatie\\LaravelData\\LaravelDataServiceProvider"]
+                },
+                {
+                    "package": "spatie/laravel-view-models",
+                    "label": "laravel-view-models — view models for templates"
+                },
+                {
+                    "package": "spatie/laravel-query-builder",
+                    "label": "laravel-query-builder — API-friendly query building"
+                },
+                {
+                    "package": "spatie/laravel-backup",
+                    "label": "laravel-backup — application & database backups",
+                    "publishProviders": ["Spatie\\Backup\\BackupServiceProvider"]
+                },
+                {
+                    "package": "spatie/laravel-permission",
+                    "label": "laravel-permission — roles & permissions",
+                    "publishProviders": ["Spatie\\Permission\\PermissionServiceProvider"]
+                },
+                {
+                    "package": "spatie/laravel-activitylog",
+                    "label": "laravel-activitylog — audit log of model changes",
+                    "publishProviders": ["Spatie\\Activitylog\\ActivitylogServiceProvider"]
+                },
+                {
+                    "package": "spatie/laravel-translatable",
+                    "label": "laravel-translatable — translatable Eloquent attributes",
+                    "publishProviders": ["Spatie\\Translatable\\TranslatableServiceProvider"]
+                }
+            ]
+        }
+    }
+}
