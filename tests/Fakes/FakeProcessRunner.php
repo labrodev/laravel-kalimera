@@ -16,10 +16,30 @@ class FakeProcessRunner implements ProcessRunner
     /** @var list<string> */
     public array $fileActions = [];
 
-    /** @var list<array{command: list<string>, cwd: string|null}> */
+    /**
+     * Quiet side effects that were actually performed. Probes are kept apart in
+     * $probeCommands: one changes the environment and the other only asks about it, so a
+     * test asserting "nothing was touched" must not have to filter questions out first.
+     *
+     * @var list<array{command: list<string>, cwd: string|null}>
+     */
     public array $quietCommands = [];
 
-    /** @var array<string, int|null> */
+    /** @var list<array{command: list<string>, cwd: string|null}> */
+    public array $probeCommands = [];
+
+    /**
+     * Quiet side effects a dry run declined to perform. Without this the promise "a
+     * rehearsal touches nothing" is true by construction — the fake would simply forget
+     * the call, and an assertion on an empty $quietCommands could not fail whatever the
+     * caller did. Recording the attempt separately lets a test show both halves: the step
+     * did ask for the destructive command, and it did not happen.
+     *
+     * @var list<array{command: list<string>, cwd: string|null}>
+     */
+    public array $skippedQuietCommands = [];
+
+    /** @var array<string, array{times: int|null, output: string}> */
     private array $failures = [];
 
     /** @var array<string, bool> */
@@ -41,11 +61,12 @@ class FakeProcessRunner implements ProcessRunner
 
     /**
      * Make every runCommand whose joined command contains the needle fail —
-     * always when $times is null, otherwise only the next $times matches.
+     * always when $times is null, otherwise only the next $times matches. The output
+     * stands in for what the real command would have printed before it failed.
      */
-    public function failOn(string $needle, ?int $times = null): void
+    public function failOn(string $needle, ?int $times = null, string $output = ''): void
     {
-        $this->failures[$needle] = $times;
+        $this->failures[$needle] = ['times' => $times, 'output' => $output];
     }
 
     public function quietResult(string $needle, bool $result): void
@@ -88,27 +109,48 @@ class FakeProcessRunner implements ProcessRunner
             }
         }
 
-        foreach ($this->failures as $needle => $remaining) {
+        foreach ($this->failures as $needle => $failure) {
             if (! str_contains($printable, $needle)) {
                 continue;
             }
 
-            if ($remaining === null) {
-                throw CommandFailedException::make(exitCode: '1', printable: $printable);
+            if ($failure['times'] === null) {
+                throw CommandFailedException::make(exitCode: '1', output: $failure['output'], printable: $printable);
             }
 
-            if ($remaining > 0) {
-                $this->failures[$needle] = $remaining - 1;
+            if ($failure['times'] > 0) {
+                $this->failures[$needle]['times'] = $failure['times'] - 1;
 
-                throw CommandFailedException::make(exitCode: '1', printable: $printable);
+                throw CommandFailedException::make(exitCode: '1', output: $failure['output'], printable: $printable);
             }
         }
     }
 
-    public function runCommandQuietly(array $command, ?string $cwd = null): bool
+    public function probe(array $command, ?string $cwd = null): bool
     {
+        $this->probeCommands[] = ['command' => $command, 'cwd' => $cwd];
+
+        return $this->answerFor($command);
+    }
+
+    public function attemptQuietly(array $command, ?string $cwd = null): bool
+    {
+        if ($this->dryRun) {
+            $this->skippedQuietCommands[] = ['command' => $command, 'cwd' => $cwd];
+
+            return false;
+        }
+
         $this->quietCommands[] = ['command' => $command, 'cwd' => $cwd];
 
+        return $this->answerFor($command);
+    }
+
+    /**
+     * @param  list<string>  $command
+     */
+    private function answerFor(array $command): bool
+    {
         $printable = implode(' ', $command);
 
         foreach ($this->quietResults as $needle => $result) {

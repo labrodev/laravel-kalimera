@@ -21,7 +21,7 @@ it('writes timestamped lines for every semantic event in order', function (): vo
     expect($lines)->toHaveCount(9)
         ->and($lines[0])->toContain('Kalimera transcript')
         ->and($lines[1])->toContain('argv: new demo-app')
-        ->and($lines[2])->toContain('captured below')
+        ->and($lines[2])->toContain('captured in full below')
         ->and($lines[3])->toContain('Step 2/11 — Installing Laravel Sail')
         ->and($lines[4])->toContain('run in /apps/demo-app: php artisan sail:install')
         ->and($lines[5])->toContain('finished [ok]: php artisan sail:install')
@@ -32,6 +32,22 @@ it('writes timestamped lines for every semantic event in order', function (): vo
     foreach ($lines as $line) {
         expect($line)->toMatch('/^\[\d{4}-/');
     }
+});
+
+// The nightly resume job greps the transcript for these two lines verbatim to prove a
+// --continue skipped what it should and rehearsed what it should. Reworded here, the
+// suite stays green and the 03:00 run fails looking like a regression in --continue.
+it('records a step the checkpoint skipped and a quiet command a dry run declined', function (): void {
+    $path = tempDir().'/transcript.log';
+    $logger = new TranscriptLogger($path);
+
+    $logger->stepSkipped(index: 1, label: 'Creating the Laravel application', total: 13);
+    $logger->quietSkipped('./vendor/bin/sail down -v');
+
+    $lines = explode(PHP_EOL, trim((string) file_get_contents($path)));
+
+    expect($lines[0])->toContain('Step 1/13 — Creating the Laravel application [skipped: completed by an earlier run]')
+        ->and($lines[1])->toContain('quiet [dry-run]: ./vendor/bin/sail down -v');
 });
 
 it('records commands without a working directory and dry-run file actions distinctly', function (): void {

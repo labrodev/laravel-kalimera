@@ -84,6 +84,14 @@ readonly class OptionCollector
 
         [$appName, $targetPath] = $targetResolver->resolve($rawTarget);
 
+        // --continue only means "continue" when there is something on disk to continue
+        // into. The flag outlives a deleted — or never created — application directory,
+        // and carrying it through unexamined would scaffold a brand-new application while
+        // telling SailStart to preserve an earlier project's containers and volumes: the
+        // fresh app would inherit a half-migrated database from the run it replaced. The
+        // guard below is unaffected, since it only fires when the directory does exist.
+        $resume = $resume && is_dir($targetPath);
+
         if (is_dir($targetPath) && ! $dryRun && ! $resume) {
             throw InvalidTargetException::make(sprintf(
                 'Directory %s already exists. Re-run with --continue to resume a failed installation there.',
@@ -106,7 +114,7 @@ readonly class OptionCollector
         }
 
         if ($useDefaults) {
-            return $this->defaults(appName: $appName, dryRun: $dryRun, installerConfig: $installerConfig, targetPath: $targetPath);
+            return $this->defaults(appName: $appName, dryRun: $dryRun, installerConfig: $installerConfig, resume: $resume, targetPath: $targetPath);
         }
 
         $starterKit = (string) select(
@@ -199,22 +207,34 @@ readonly class OptionCollector
             label: 'Set up the Postmark SDK (wildbit/postmark-php)?',
         );
 
-        $boostAgents = $this->stringList(multiselect(
-            default: $installerConfig->boostAgents,
-            hint: 'Preconfigures boost:install so it runs without prompts. Select none to let Boost auto-detect your installed agents.',
-            label: 'Which AI agents should Laravel Boost set up?',
-            options: self::BOOST_AGENTS,
-            scroll: 8,
-        ));
+        $installBoost = confirm(
+            default: $installerConfig->installBoost,
+            label: 'Install Laravel Boost (AI agent guidelines, skills and MCP)?',
+        );
 
         $packageListParser = new PackageListParser;
 
-        $boostSkillRepos = $packageListParser(answer: text(
-            default: implode(' ', $installerConfig->boostSkillRepos),
-            hint: 'Space or comma separated — each one is passed to `artisan boost:add-skill`. Leave empty to skip.',
-            label: 'GitHub repositories with your Boost skills',
-            placeholder: 'owner/repo another-owner/repo or https://github.com/owner/repo',
-        ));
+        // Which agents and which skill repositories are questions about how Boost gets set
+        // up, so they are worth nobody's time once it is not being installed at all.
+        $boostAgents = [];
+        $boostSkillRepos = [];
+
+        if ($installBoost) {
+            $boostAgents = $this->stringList(multiselect(
+                default: $installerConfig->boostAgents,
+                hint: 'Preconfigures boost:install so it runs without prompts. Select none to let Boost auto-detect your installed agents.',
+                label: 'Which AI agents should Laravel Boost set up?',
+                options: self::BOOST_AGENTS,
+                scroll: 8,
+            ));
+
+            $boostSkillRepos = $packageListParser(answer: text(
+                default: implode(' ', $installerConfig->boostSkillRepos),
+                hint: 'Space or comma separated — each one is passed to `artisan boost:add-skill`. Leave empty to skip.',
+                label: 'GitHub repositories with your Boost skills',
+                placeholder: 'owner/repo another-owner/repo or https://github.com/owner/repo',
+            ));
+        }
 
         $extraPackages = $packageListParser(answer: text(
             default: implode(' ', $installerConfig->extraPackages),
@@ -241,16 +261,18 @@ readonly class OptionCollector
             qualityTools: $qualityTools,
             additionalPackages: $additionalPackages,
             installPostmark: $installPostmark,
+            installBoost: $installBoost,
             coreNamespace: $coreNamespace,
             boostAgents: $boostAgents,
             boostSkillRepos: $boostSkillRepos,
             extraPackages: $extraPackages,
             extraDevPackages: $extraDevPackages,
             dryRun: $dryRun,
+            resume: $resume,
         );
     }
 
-    private function defaults(string $appName, bool $dryRun, InstallerConfig $installerConfig, string $targetPath): InstallerOption
+    private function defaults(string $appName, bool $dryRun, InstallerConfig $installerConfig, bool $resume, string $targetPath): InstallerOption
     {
         return new InstallerOption(
             appName: $appName,
@@ -266,12 +288,14 @@ readonly class OptionCollector
             qualityTools: $installerConfig->qualityTools,
             additionalPackages: $installerConfig->preselectedAdditionalPackages(),
             installPostmark: $installerConfig->installPostmark,
+            installBoost: $installerConfig->installBoost,
             coreNamespace: $installerConfig->coreNamespace,
             boostAgents: $installerConfig->boostAgents,
             boostSkillRepos: $installerConfig->boostSkillRepos,
             extraPackages: $installerConfig->extraPackages,
             extraDevPackages: $installerConfig->extraDevPackages,
             dryRun: $dryRun,
+            resume: $resume,
         );
     }
 

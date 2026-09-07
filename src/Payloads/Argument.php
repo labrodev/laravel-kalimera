@@ -10,6 +10,7 @@ readonly class Argument
         public bool $dryRun,
         public bool $resume,
         public bool $useDefaults,
+        public bool $verbose,
         public ?string $command,
         public ?string $configPath,
         public ?string $logPath,
@@ -53,6 +54,7 @@ readonly class Argument
             presetName: $positionals[1] ?? null,
             resume: in_array('--continue', $argv, true),
             useDefaults: in_array('--defaults', $argv, true),
+            verbose: in_array('--verbose', $argv, true) || in_array('-v', $argv, true),
         );
     }
 }

@@ -35,7 +35,7 @@ readonly class PreflightCheck implements Pipeline
             }
         }
 
-        if ($this->processRunner->runCommandQuietly(command: ['docker', 'info'])) {
+        if ($this->processRunner->probe(command: ['docker', 'info'])) {
             return;
         }
 

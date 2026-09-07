@@ -12,9 +12,14 @@ it('reads the command and preset name from the positionals', function (): void {
         ->and($argument->dryRun)->toBeFalse()
         ->and($argument->useDefaults)->toBeFalse()
         ->and($argument->resume)->toBeFalse()
+        ->and($argument->verbose)->toBeFalse()
         ->and($argument->logPath)->toBeNull()
         ->and($argument->configPath)->toBeNull();
 });
+
+it('parses the verbose flag in both spellings', function (string $flag): void {
+    expect(Argument::fromArgv(['new', $flag])->verbose)->toBeTrue();
+})->with(['--verbose', '-v']);
 
 it('leaves the command and preset name empty without positionals', function (): void {
     $argument = Argument::fromArgv([]);

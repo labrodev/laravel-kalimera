@@ -7,11 +7,14 @@ namespace Kalimera\Pipelines;
 use Kalimera\Contracts\Pipeline;
 use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Payloads\InstallerOption;
+use Kalimera\Services\BackupPath;
 use Kalimera\Services\ComposerFileEditor;
 use Kalimera\Services\FileWriter;
 use Kalimera\Services\GitignoreEditor;
 use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Services\TemplatePublisher;
+
+use function Laravel\Prompts\warning;
 
 readonly class QualityToolsInstall implements Pipeline
 {
@@ -45,13 +48,54 @@ readonly class QualityToolsInstall implements Pipeline
         }
 
         $this->processRunner->runCommand(
-            attempts: 3,
+            attempts: ProcessRunner::NETWORK_ATTEMPTS,
             command: $this->sailCommandBuilder->composer('require', '--dev', ...$packages),
             cwd: $this->sailCommandBuilder->path(),
         );
 
         $this->publishConfigurations();
         $this->registerComposerScripts();
+    }
+
+    /**
+     * A phpstan.neon takes precedence over the phpstan.neon.dist published beside it, so
+     * the skeleton's copy has to go or the whole published configuration is ignored.
+     *
+     * On a fresh scaffold that file is `laravel new`'s by definition and deleting it is
+     * right — keeping a backup would leave a `.bak` in every generated application for no
+     * reason. On a --continue replay it can just as easily be one the user wrote while
+     * narrowing the analysis to diagnose the failure, and from here the two are
+     * indistinguishable, so that one is moved aside instead.
+     */
+    private function discardSkeletonConfig(): void
+    {
+        $path = $this->installerOption->targetPath.'/phpstan.neon';
+
+        if (! file_exists($path)) {
+            return;
+        }
+
+        if (! $this->installerOption->resume) {
+            unlink($path);
+
+            return;
+        }
+
+        $backup = (new BackupPath)($path);
+
+        // Leaving it beats destroying it: an unmovable phpstan.neon shadows the published
+        // .dist, which is a visible misconfiguration the warning explains, while deleting
+        // the user's own file is not recoverable at all.
+        if (! @rename($path, $backup)) {
+            warning('phpstan.neon could not be moved aside — it was left in place, and it takes precedence over the published phpstan.neon.dist.');
+
+            return;
+        }
+
+        warning(sprintf(
+            'phpstan.neon would have shadowed the published phpstan.neon.dist — it was kept as %s.',
+            basename($backup),
+        ));
     }
 
     private function publishConfigurations(): void
@@ -72,11 +116,7 @@ readonly class QualityToolsInstall implements Pipeline
                     $templatePublisher(destination: 'phpstan-baseline.neon', template: 'phpstan-baseline.neon');
                     $this->stripSrcPathUnlessScaffolded(file: 'phpstan.neon.dist', line: "        - src\n");
 
-                    $skeletonConfig = $this->installerOption->targetPath.'/phpstan.neon';
-
-                    if (file_exists($skeletonConfig)) {
-                        unlink($skeletonConfig);
-                    }
+                    $this->discardSkeletonConfig();
                 },
                 description: 'publish phpstan.neon.dist with an empty baseline (replaces the skeleton phpstan.neon)',
             );

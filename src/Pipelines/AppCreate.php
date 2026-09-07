@@ -35,6 +35,7 @@ readonly class AppCreate implements Pipeline
                 description: 'normalize bootstrap/providers.php to inline class names',
             );
             $this->ignoreTranscript();
+            $this->ignoreResumeState();
             $this->saveInstallerOption();
 
             return;
@@ -71,6 +72,7 @@ readonly class AppCreate implements Pipeline
             description: 'normalize bootstrap/providers.php to inline class names',
         );
         $this->ignoreTranscript();
+        $this->ignoreResumeState();
         $this->saveInstallerOption();
     }
 
@@ -85,6 +87,19 @@ readonly class AppCreate implements Pipeline
         $this->processRunner->applyFileChange(
             action: fn () => new GitignoreEditor($this->installerOption->targetPath)->ensure([$entry]),
             description: 'gitignore the '.$this->transcriptFile.' transcript',
+        );
+    }
+
+    /**
+     * Both files exist only for the span of a run and are removed when it completes, so
+     * they are only ever present in a working tree the user is about to commit if the
+     * run failed — which is precisely when they must not be committed.
+     */
+    private function ignoreResumeState(): void
+    {
+        $this->processRunner->applyFileChange(
+            action: fn () => new GitignoreEditor($this->installerOption->targetPath)->ensure(['/.kalimera.json', '/.kalimera-steps.json']),
+            description: 'gitignore the .kalimera.json and .kalimera-steps.json resume state',
         );
     }
 

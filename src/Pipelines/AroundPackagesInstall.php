@@ -34,7 +34,7 @@ readonly class AroundPackagesInstall implements Pipeline
         if ($this->installerOption->wantsHorizon()) {
             $providersBefore = $this->currentProviders();
 
-            $this->processRunner->runCommand(attempts: 3, command: $this->sailCommandBuilder->composer('require', 'laravel/horizon'), cwd: $this->sailCommandBuilder->path());
+            $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->composer('require', 'laravel/horizon'), cwd: $this->sailCommandBuilder->path());
             $this->processRunner->runCommand(command: $this->sailCommandBuilder->artisan('horizon:install'), cwd: $this->sailCommandBuilder->path());
 
             $this->repairProvidersFile(expected: [...$providersBefore, 'App\\Providers\\HorizonServiceProvider']);
@@ -43,7 +43,7 @@ readonly class AroundPackagesInstall implements Pipeline
         if (in_array('fortify', $this->installerOption->aroundPackages, true) && ! $this->fortifyAlreadyInstalled()) {
             $providersBefore = $this->currentProviders();
 
-            $this->processRunner->runCommand(attempts: 3, command: $this->sailCommandBuilder->composer('require', 'laravel/fortify'), cwd: $this->sailCommandBuilder->path());
+            $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->composer('require', 'laravel/fortify'), cwd: $this->sailCommandBuilder->path());
             $this->processRunner->runCommand(command: $this->sailCommandBuilder->artisan('fortify:install'), cwd: $this->sailCommandBuilder->path());
 
             $this->repairProvidersFile(expected: [...$providersBefore, 'App\\Providers\\FortifyServiceProvider']);
@@ -58,19 +58,29 @@ readonly class AroundPackagesInstall implements Pipeline
         }
     }
 
+    /**
+     * Asks what `fortify:install` leaves behind rather than whether composer.json requires
+     * the package. The requirement alone cannot tell a starter kit that ships Fortify apart
+     * from kalimera's own `composer require` on the line above — so a run that required the
+     * package and then died before installing it used to look finished, and the replay under
+     * --continue skipped the install that never happened, delivering a composer requirement
+     * with no config, no actions and no registered provider, over an exit code of 0.
+     *
+     * The published config is the marker because it appears in both legitimate cases and in
+     * neither failure: a kit that bundles Fortify has it straight out of `laravel new`, and
+     * an earlier run that got as far as publishing it has genuinely finished this work.
+     */
     private function fortifyAlreadyInstalled(): bool
     {
         if ($this->processRunner->isDryRun()) {
             return false;
         }
 
-        $composerJson = (string) file_get_contents($this->installerOption->targetPath.'/composer.json');
-
-        if (! str_contains($composerJson, 'laravel/fortify')) {
+        if (! file_exists($this->installerOption->targetPath.'/config/fortify.php')) {
             return false;
         }
 
-        info('Fortify already ships with the chosen starter kit — skipping it.');
+        info('Fortify is already installed — skipping it.');
 
         return true;
     }
@@ -107,7 +117,7 @@ readonly class AroundPackagesInstall implements Pipeline
         $path = $this->installerOption->targetPath.'/bootstrap/providers.php';
         $contents = (string) file_get_contents($path);
 
-        if ($this->processRunner->runCommandQuietly(command: ['php', '-l', $path]) && ! str_contains($contents, '1::class')) {
+        if ($this->processRunner->probe(command: ['php', '-l', $path]) && ! str_contains($contents, '1::class')) {
             return;
         }
 
@@ -120,7 +130,7 @@ readonly class AroundPackagesInstall implements Pipeline
 
         (new FileWriter)(contents: "<?php\n\nreturn [\n".implode("\n", $lines)."\n];\n", path: $path);
 
-        if (! $this->processRunner->runCommandQuietly(command: ['php', '-l', $path])) {
+        if (! $this->processRunner->probe(command: ['php', '-l', $path])) {
             throw ProvidersRepairFailedException::make($path);
         }
     }
@@ -128,7 +138,7 @@ readonly class AroundPackagesInstall implements Pipeline
     private function softRequire(string $package): void
     {
         try {
-            $this->processRunner->runCommand(attempts: 3, command: $this->sailCommandBuilder->composer('require', $package), cwd: $this->sailCommandBuilder->path());
+            $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->composer('require', $package), cwd: $this->sailCommandBuilder->path());
         } catch (Throwable $exception) {
             warning(sprintf('%s could not be installed — skipping it. %s', $package, $exception->getMessage()));
         }

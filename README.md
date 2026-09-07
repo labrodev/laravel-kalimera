@@ -22,8 +22,17 @@ setup each time.
 
 Install once, use `kalimera` from anywhere — same mechanism as the `laravel` installer.
 
-While the package is not yet on Packagist, register this repo as a path repository in your
-global composer (the symlink means every local change to the repo is instantly live):
+```bash
+composer global require labrodev/kalimera
+```
+
+Make sure composer's global bin directory (`~/.composer/vendor/bin` or
+`~/.config/composer/vendor/bin`) is in your `PATH` — if the `laravel` command works, it already is.
+
+#### Working from a local checkout
+
+Developing kalimera itself? Point global composer at your working copy with a path repository
+instead of Packagist (the symlink means every local change is instantly live):
 
 ```bash
 composer global config repositories.kalimera '{"type": "path", "url": "/path/to/laravel-kalimera", "options": {"symlink": true}}'
@@ -31,14 +40,11 @@ composer global require labrodev/kalimera:@dev
 ```
 
 (`:@dev` is needed because a path repository has no tagged releases — the package only exists
-as `dev-main`, and composer's default stability is `stable`.)
-
-Make sure composer's global bin directory (`~/.composer/vendor/bin` or
-`~/.config/composer/vendor/bin`) is in your `PATH` — if the `laravel` command works, it already is.
-
-Once published to Packagist, this becomes simply:
+as `dev-main`, and composer's default stability is `stable`.) A path repository is canonical,
+so it silently shadows the Packagist version even after you're done — switch back with:
 
 ```bash
+composer global config --unset repositories.kalimera
 composer global require labrodev/kalimera
 ```
 
@@ -72,9 +78,10 @@ Options:
 |---|---|
 | `--dry-run` | Print every command without executing anything |
 | `--defaults` | Skip all prompts and accept the preselected answers |
-| `--continue` | Resume into an existing app directory after a failed run — the answers saved in its `.kalimera.json` are reused, no prompts (the file is written after `laravel new` and removed when the scaffold completes) |
+| `--continue` | Resume into an existing app directory after a failed run — the answers saved in its `.kalimera.json` are reused, no prompts, and the steps listed in its `.kalimera-steps.json` are skipped so the run picks up where it stopped. Both files are written after `laravel new`, gitignored, and removed when the scaffold completes. Editing the answers before resuming only affects steps that have *not* been checkpointed — a step already listed is skipped whatever its answers now say, so delete it from the list as well to have the edit take effect |
 | `--config=path` | Load the preselected answers and the additional-packages catalog from a JSON config — see [Configuration](#configuration). `kalimera.config.json` in the current directory is picked up automatically |
 | `--log[=path]` | Write an append-only transcript of steps, commands and outcomes to a log file (defaults to `kalimera.log` inside the new application, gitignored there) |
+| `--verbose`, `-v` | Stream the raw output of every command instead of condensing it to a progress line. Off by default: the Sail image build alone is tens of thousands of apt lines, which buries the installer's own steps. A failed command always replays its last 40 lines regardless, and `--log` captures everything either way |
 
 ## What it does
 
@@ -97,11 +104,13 @@ Options:
    built-in catalog is the Spatie collection (`laravel-data`, `laravel-view-models`,
    `laravel-query-builder`, `laravel-backup`, `laravel-permission`, `laravel-activitylog`,
    `laravel-translatable`) — replace it with your own via [Configuration](#configuration).
-7. Installs **Laravel Boost**: you pick the AI agents (Claude Code, Cursor, Codex, Copilot, …)
+7. Optionally installs **Laravel Boost** (on by default): you pick the AI agents (Claude Code, Cursor, Codex, Copilot, …)
    upfront — kalimera preconfigures `boost.json` and runs `boost:install --guidelines --skills
    --mcp --no-interaction`, fully unattended. (Select no agents to answer Boost's own prompts
    instead.) Then pulls your skills from GitHub via `boost:add-skill <owner/repo> --all` — one
-   run per repository, so you can list several space- or comma-separated at the prompt.
+   run per repository, so you can list several space- or comma-separated at the prompt. Finishes
+   with `boost:update --no-discover --no-interaction` so the guidelines and skills are the latest
+   guidance rather than whatever the installed release bundled (a warning, never a failure).
 8. Optionally sets up the **Postmark SDK** (`wildbit/postmark-php`) with `postmark:push` /
    `postmark:pull` composer scripts and a `POSTMARK_API_KEY` env placeholder.
 9. Optionally scaffolds the **Core structure**: `src/{Domain,Shared,Support,Feature,Infrastructure}`
@@ -151,7 +160,8 @@ keeps the built-in behavior.
 
 - **`preselected`** — the pre-chosen answers of every prompt, and exactly what `--defaults`
   installs unattended. Keys mirror the prompts: `starterKit`, `installInertia`, `aroundPackages`,
-  `sailServices`, `phpConstraint`, `qualityTools`, `installPostmark`, `coreNamespace`
+  `sailServices`, `phpConstraint`, `qualityTools`, `installPostmark`, `installBoost`
+  (`false` skips the Boost step and the two questions behind it), `coreNamespace`
   (`null` skips the Core scaffold), `boostAgents`, `boostSkillRepos`, `extraPackages`,
   `extraDevPackages`.
 - **`additionalPackages`** replaces the built-in Spatie catalog shown by the
@@ -223,8 +233,7 @@ composer quality    # rector:dry + pint:dry + phpstan (level 8) + tests
 ```
 
 Individual scripts: `pint:dry` / `pint:fix`, `rector:dry` / `rector:fix`, `phpstan`,
-`phpstan-clear` and `test`. The same checks run in CI on PHP 8.4 and 8.5
-(`.github/workflows/ci.yml`).
+`phpstan-clear`, `test` and `test:coverage`.
 
 The suite is split into three Pest test suites:
 
@@ -239,3 +248,31 @@ tests/Arch          architecture rules: strict types, readonly classes, no debug
 Steps talk to the outside world only through the `ProcessRunner`, `PortChecker` and
 `ExecutableFinder` seams, so the whole installer runs in-process against fakes
 (`tests/Fakes/`) — no Docker, network or `laravel` binary needed to test it.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+| Job | What it covers |
+|---|---|
+| Quality matrix | The full suite on PHP 8.4 and 8.5 across Ubuntu and macOS. Pint, PHPStan and Rector are platform-independent, so they run on Ubuntu only; macOS runs the tests because it is the platform kalimera is actually used on, and the one whose quirks the process handling works around — VirtioFS write visibility, and a TTY-mode `wait()` that misreports success |
+| Lowest dependencies | The suite against the lowest versions every `composer.json` constraint allows. Resolution always picks the newest, so without this the declared floors are never executed — this job is what caught `mockery ^1.6` emitting PHP 8.4 deprecations at its lower bound |
+| Coverage | `composer test:coverage`, informational rather than a gate — the number exists so gaps are visible when deciding what to test next, not so a PR can be blocked on a decimal point |
+
+Because every test fakes the process runner, the suite proves kalimera emits the right
+commands but never that they succeed. `.github/workflows/nightly-scaffold.yml` is the run
+that does — nightly rather than per-PR, since a cold Sail image build is 10–15 minutes:
+
+- **Scaffold a real application** — `kalimera new nightly-app --defaults --log` against real
+  Docker, then asserts the containers are up and `migrate:status` answers. `laravel new`
+  and `sail:install` merely succeeding is not the bar; the real failures land after that.
+- **Resume a failed scaffold** — deliberately breaks a run with an unresolvable package,
+  asserts the finished steps were checkpointed and the failed one was not, fixes the saved
+  answers the way a user would, resumes, and checks the completed steps were skipped while
+  the containers were started anyway. What the suite cannot prove is that a half-scaffolded
+  application on disk is one the remaining steps can finish.
+
+Both jobs upload their `--log` transcript as an artifact, which is the only record of what
+the child processes printed and exactly what a failed nightly needs. Every bug found in
+real use so far — an orphaned Postgres sequence, an inherited volume, a frozen progress
+line — survived the faked-runner suite and only showed up in a run like these.

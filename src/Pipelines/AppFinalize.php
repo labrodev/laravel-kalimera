@@ -6,7 +6,9 @@ namespace Kalimera\Pipelines;
 
 use Kalimera\Contracts\Pipeline;
 use Kalimera\Contracts\ProcessRunner;
+use Kalimera\Exceptions\CommandFailedException;
 use Kalimera\Payloads\InstallerOption;
+use Kalimera\Payloads\MigrationFailure;
 use Kalimera\Services\InstallerOptionStore;
 use Kalimera\Services\SailCommandBuilder;
 
@@ -16,6 +18,12 @@ use Throwable;
 
 readonly class AppFinalize implements Pipeline
 {
+    /**
+     * Waiting out a database that has not finished booting is a different problem from a
+     * flaky download, so it gets its own budget rather than ProcessRunner::NETWORK_ATTEMPTS.
+     */
+    private const int MIGRATE_ATTEMPTS = 3;
+
     public function __construct(
         private InstallerOption $installerOption,
         private ProcessRunner $processRunner,
@@ -32,7 +40,7 @@ readonly class AppFinalize implements Pipeline
     {
         $this->migrate();
 
-        $this->processRunner->runCommand(attempts: 3, command: $this->sailCommandBuilder->npm('install'), cwd: $this->sailCommandBuilder->path(), timeout: null);
+        $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->npm('install'), cwd: $this->sailCommandBuilder->path(), timeout: null);
 
         if ($this->installerOption->wantsQualityTool('phpstan')) {
             $this->softRun(
@@ -55,12 +63,27 @@ readonly class AppFinalize implements Pipeline
             if ($this->processRunner->isDryRun() || ! $this->installerOption->usesDatabaseService()) {
                 throw $throwable;
             }
-        }
 
-        // An interrupted scaffold leaves schema behind that blocks migrate, and orphaned
-        // sequences survive even `db:wipe`. The application has never run at this point,
-        // so recreating the database volume is both safe and engine-agnostic.
-        warning('Migrations failed against leftover data — recreating the database volume and migrating again.');
+            // An interrupted scaffold leaves schema behind that blocks migrate, and
+            // orphaned sequences survive even `db:wipe`. The application has never run at
+            // this point, so recreating the volume is both safe and engine-agnostic.
+            $reason = match ($this->classify($throwable)) {
+                MigrationFailure::SchemaConflict => 'Migrations hit schema left over from an earlier run — recreating the database volume.',
+                MigrationFailure::Unavailable => 'The database never became reachable — recreating its volume and migrating again.',
+                // Recreating answers one question: is the existing data in the way? A server
+                // that answered and refused on its own terms — a migration that will not
+                // parse, a constraint the schema cannot satisfy — refuses a fresh database
+                // identically, so destroying it buys nothing and hides the real error behind
+                // a second copy of itself.
+                MigrationFailure::Rejected => null,
+            };
+
+            if ($reason === null) {
+                throw $throwable;
+            }
+
+            warning($reason);
+        }
 
         $this->processRunner->runCommand(
             command: $this->sailCommandBuilder->command('down', '-v'),
@@ -90,7 +113,13 @@ readonly class AppFinalize implements Pipeline
 
                 return;
             } catch (Throwable $throwable) {
-                if ($attempts >= 3 || $this->processRunner->isDryRun()) {
+                // Waiting cannot clear schema that is already there: every retry replays
+                // the same duplicate-relation error and buries the real cause in noise.
+                if (! $this->classify($throwable)->shouldRetry()) {
+                    throw $throwable;
+                }
+
+                if ($attempts >= self::MIGRATE_ATTEMPTS || $this->processRunner->isDryRun()) {
                     throw $throwable;
                 }
 
@@ -98,6 +127,13 @@ readonly class AppFinalize implements Pipeline
                 sleep($this->retryDelaySeconds);
             }
         }
+    }
+
+    private function classify(Throwable $throwable): MigrationFailure
+    {
+        return $throwable instanceof CommandFailedException
+            ? MigrationFailure::fromOutput($throwable->output)
+            : MigrationFailure::Unavailable;
     }
 
     private function applyQualityBaseline(): void

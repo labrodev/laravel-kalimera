@@ -27,6 +27,10 @@ readonly class SailStart implements Pipeline
 
     public function execute(): void
     {
+        if (! $this->installerOption->resume) {
+            $this->discardPreviousProject();
+        }
+
         try {
             $this->up();
         } catch (CommandFailedException) {
@@ -35,13 +39,81 @@ readonly class SailStart implements Pipeline
             $this->up();
         }
 
-        // A dry run never starts the containers, so there is nothing to exec into —
-        // and a --continue rehearsal must not touch a live container from an earlier run.
-        if ($this->processRunner->isDryRun()) {
+        // Every side effect below goes through attemptQuietly, which a dry run skips on
+        // its own — there is no live container to exec into after a rehearsal anyway.
+        $this->grantHomeDirectory();
+    }
+
+    /**
+     * Compose derives its project name from the directory, so an app scaffolded under a
+     * name that was used before inherits that run's containers and volumes — including a
+     * half-migrated database, which later fails `migrate` with duplicate-relation errors
+     * that look nothing like the stale data behind them. A --continue run keeps everything.
+     *
+     * What gets inherited is not necessarily abandoned, though. This directory was created
+     * moments ago, so anything already answering to its project name belongs to something
+     * else: an earlier run under the same name, or an application still in use in another
+     * directory that happens to share it. `down -v` takes that one's database with it.
+     * So the removal is announced with the resources it is about to destroy, and skipped
+     * outright when there is nothing to inherit — which is the overwhelmingly common case,
+     * and the one where a blind `down -v` bought nothing for its risk.
+     *
+     * Deliberately without --remove-orphans: that would also remove containers absent
+     * from this compose file but carrying the project label, which are by definition not
+     * ours — and with -v their volumes go too.
+     */
+    private function discardPreviousProject(): void
+    {
+        $inherited = $this->inheritedResources();
+
+        if ($inherited === []) {
             return;
         }
 
-        $this->grantHomeDirectory();
+        warning(sprintf(
+            'Docker already has a project named "%s" — from an earlier run under this name, or from another application sharing it. Removing it, and its data, before starting: %s.',
+            $this->projectName(),
+            implode(', ', $inherited),
+        ));
+
+        $this->processRunner->attemptQuietly(
+            command: $this->sailCommandBuilder->command('down', '-v'),
+            cwd: $this->sailCommandBuilder->path(),
+        );
+    }
+
+    /**
+     * Compose names are deterministic, so what exists can be asked one name at a time —
+     * an inspect exits non-zero for anything docker does not hold. Probes rather than
+     * quiet attempts: these only ask, which is why a dry run runs them too and can report
+     * what a real run would have removed.
+     *
+     * @return list<string>
+     */
+    private function inheritedResources(): array
+    {
+        $project = $this->projectName();
+        $inherited = [];
+
+        foreach (['laravel.test', ...$this->installerOption->sailServices] as $service) {
+            $container = $project.'-'.$service.'-1';
+
+            if ($this->processRunner->probe(command: ['docker', 'container', 'inspect', $container])) {
+                $inherited[] = 'container '.$container;
+            }
+        }
+
+        // Sail names every service volume `sail-<service>`, and the project prefix makes
+        // it `<project>_sail-<service>`. Services without one simply answer no.
+        foreach ($this->installerOption->sailServices as $service) {
+            $volume = $project.'_sail-'.$service;
+
+            if ($this->processRunner->probe(command: ['docker', 'volume', 'inspect', $volume])) {
+                $inherited[] = 'volume '.$volume;
+            }
+        }
+
+        return $inherited;
     }
 
     private function up(): void
@@ -56,7 +128,7 @@ readonly class SailStart implements Pipeline
      */
     private function grantHomeDirectory(): void
     {
-        $this->processRunner->runCommandQuietly(
+        $this->processRunner->attemptQuietly(
             command: ['docker', 'compose', 'exec', '-T', '-u', 'root', 'laravel.test', 'chown', '-R', 'sail', '/home/sail'],
             cwd: $this->sailCommandBuilder->path(),
         );
@@ -73,13 +145,13 @@ readonly class SailStart implements Pipeline
         $project = $this->projectName();
 
         foreach (['laravel.test', ...$this->installerOption->sailServices] as $service) {
-            $this->processRunner->runCommandQuietly(
+            $this->processRunner->attemptQuietly(
                 command: ['docker', 'rm', '-f', $project.'-'.$service.'-1'],
                 cwd: $this->sailCommandBuilder->path(),
             );
         }
 
-        $this->processRunner->runCommandQuietly(
+        $this->processRunner->attemptQuietly(
             command: ['docker', 'network', 'rm', $project.'_sail'],
             cwd: $this->sailCommandBuilder->path(),
         );

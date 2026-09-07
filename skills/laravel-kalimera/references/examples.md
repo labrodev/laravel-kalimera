@@ -15,6 +15,7 @@ Every `preselected` key at its built-in value, plus the built-in Spatie catalog 
         "phpConstraint": "^8.5",
         "qualityTools": ["pint", "phpstan", "rector"],
         "installPostmark": false,
+        "installBoost": true,
         "coreNamespace": "Core",
         "boostAgents": ["claude_code", "cursor", "codex"],
         "boostSkillRepos": [],
@@ -75,22 +76,22 @@ Step numbers shift when conditional steps are skipped — match progress and fai
 | Label | Runs when | What it does |
 |-------|-----------|--------------|
 | Checking requirements | Always, before the numbered steps | `php`, `composer`, `laravel`, `docker`, `git` on PATH; `docker info` answers (warning only under `--dry-run`) |
-| Creating the Laravel application | Always | `laravel new <name> --pest --git --no-boost --no-interaction [--react\|--vue\|--livewire\|--svelte]`; writes `.kalimera.json` |
+| Creating the Laravel application | Always | `laravel new <name> --pest --git --no-boost --no-interaction [--react\|--vue\|--livewire\|--svelte]`; writes `.kalimera.json` and gitignores it alongside `.kalimera-steps.json` |
 | Installing Laravel Sail | Always | `artisan sail:install --with=<services\|none>`; removes the leftover sqlite db; syncs `DB_*` into `.env.example` |
 | Matching the Sail runtime to PHP X.Y | Always | Pins the compose file to the chosen PHP minor |
 | Resolving host port conflicts | Always | Probes `APP_PORT`, `VITE_PORT`, `FORWARD_*` and writes the next free ports into `.env` |
-| Building and starting the Sail containers | Always | `sail up -d --wait`; on failure removes leftover containers/network and retries |
+| Building and starting the Sail containers | Always, including on `--continue` | On a fresh run, removes an inherited compose project first (`down -v`) if containers/volumes already answer to this directory's name — warns with exactly what it removes, and skips when nothing does. Then `sail up -d --wait`; on failure removes leftover containers/network and retries |
 | Restricting PHP to `<constraint>` | Always | `sail composer require php:<constraint> --no-update` |
 | Installing Laravel ecosystem packages | `aroundPackages` not empty | Horizon (+ `horizon:install`), Fortify (skipped when the kit ships it), Laravel AI, Nightwatch (last two warn on failure) |
 | Setting up static analysis tools | `qualityTools` not empty | Pint, Larastan, IDE Helper, Rector + published configs, empty PHPStan baseline, composer scripts |
 | Installing additional packages | Any catalog entry selected | Batched `composer require` (+ `--dev` batch), then `vendor:publish` per entry |
-| Installing Laravel Boost | Always | Writes `boost.json` with the chosen agents; `boost:install --guidelines --skills --mcp --no-interaction`; `boost:add-skill <repo> --all` per repo (warns on failure) |
+| Installing Laravel Boost | `installBoost` is not false | Writes `boost.json` with the chosen agents; `boost:install --guidelines --skills --mcp --no-interaction`; `boost:add-skill <repo> --all` per repo (warns on failure); `boost:update --no-discover --no-interaction` to refresh guidelines and skills (warns on failure) |
 | Setting up the Postmark SDK | `installPostmark: true` | `wildbit/postmark-php`; `postmark:push` / `postmark:pull` scripts; `POSTMARK_API_KEY` env placeholder |
 | Installing Inertia | `starterKit: none` + `installInertia: true` | `inertiajs/inertia-laravel` + middleware; wiring stays manual |
 | Scaffolding the `<Namespace>` src/ structure | `coreNamespace` not null | `src/{Domain,Shared,Support,Feature,Infrastructure}` + PSR-4 map + dump-autoload |
 | Installing extra packages | `extraPackages` / `extraDevPackages` set | One `composer require` per package (warns on failure) |
 | Guarding destructive commands against AI agents | Always | Publishes `AgentGuardServiceProvider`, registers it last in `bootstrap/providers.php` |
-| Finalizing the application | Always | Migrate (with retries), `npm install`, `ide-helper`, `rector:fix` twice, `pint:fix`, `phpstan` (auto-baseline), `composer quality`, delete `.kalimera.json`, initial git commit |
+| Finalizing the application | Always | Migrate (retried only while the database is unreachable; leftover schema goes straight to recreating the volume; a migration the server itself refused stops on the spot, since an empty database refuses it identically), `npm install`, `ide-helper`, `rector:fix` twice, `pint:fix`, `phpstan` (auto-baseline), `composer quality`, delete `.kalimera.json` and `.kalimera-steps.json`, initial git commit |
 
 ## Worked session: custom scaffold
 
@@ -140,7 +141,7 @@ Plan looks right — run it for real and verify:
 
 ```bash
 kalimera new crm --defaults --config=/tmp/crm.kalimera.json --log   # 10+ minutes
-test ! -f crm/.kalimera.json && echo "completed"
+test ! -f crm/.kalimera.json && test ! -f crm/.kalimera-steps.json && echo "completed"
 cd crm && ./vendor/bin/sail ps && git log --oneline -1
 ```
 
@@ -161,12 +162,43 @@ Diagnose, fix inside the app, resume from the parent:
 ```bash
 tail -50 crm/kalimera.log                 # transcript: what ran, what failed
 test -f crm/.kalimera.json && echo "resumable"
+cat crm/.kalimera-steps.json              # the steps the failed run finished
 
 cd crm && ./vendor/bin/sail composer require laravel/boost --dev
 grep '"laravel/boost"' composer.json      # confirm it landed
 
 cd .. && kalimera new crm --continue --defaults
 ```
+
+The resume walks the same plan and skips what is checkpointed, so the first steps cost nothing:
+
+```
+ ▶ Step 1/13 — Creating the Laravel application (done by the previous run — skipping)
+ ...
+ ▶ Step 5/13 — Building and starting the Sail containers
+ → [crm] ./vendor/bin/sail up -d --wait
+ ...
+ ▶ Step 9/13 — Installing Laravel Boost
+```
+
+Starting the containers runs again on purpose — the checkpoint says they were started once, not that they are up now.
+
+When the fix is a changed ANSWER rather than a repaired environment, both files matter. Dropping a package that will not resolve:
+
+```bash
+# 1. Remove it from the saved answers — a resume ignores --config= entirely
+php -r '$p="crm/.kalimera.json"; $a=json_decode(file_get_contents($p),true);
+        $a["additionalPackages"]=[]; file_put_contents($p,json_encode($a,JSON_PRETTY_PRINT));'
+
+# 2. If its step already completed, remove it from the checkpoint too — otherwise
+#    the step is skipped and the edit never runs
+php -r '$p="crm/.kalimera-steps.json"; $s=json_decode(file_get_contents($p),true);
+        file_put_contents($p,json_encode(array_values(array_diff($s,["AdditionalPackagesInstall"])),JSON_PRETTY_PRINT));'
+
+cd ~/www && kalimera new crm --continue --defaults
+```
+
+A step that re-runs republishes its template. An edited `pint.json` / `phpstan.neon.dist` / `rector.php` is kept as `<file>.bak` with a warning — nothing is lost, but the live file is the template again.
 
 Port collision between two kalimera apps scaffolded at different times (the probe only sees ports that are busy at scaffold time):
 

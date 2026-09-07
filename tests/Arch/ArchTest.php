@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Kalimera\Contracts\Pipeline;
 use Kalimera\KalimeraInstaller;
 use Kalimera\Pipelines\SailPortsConfigure;
+use Kalimera\Services\CommandOutputPrinter;
 use Kalimera\Services\ComposerFileEditor;
 use Kalimera\Services\RunLock;
 use Kalimera\Services\TranscriptLogger;
@@ -15,7 +16,7 @@ arch('kalimera declares strict types everywhere', function (): void {
 
 arch('kalimera classes are readonly', function (): void {
     expect('Kalimera')->classes()->toBeReadonly()
-        ->ignoring([SailPortsConfigure::class, ComposerFileEditor::class, RunLock::class, TranscriptLogger::class, 'Kalimera\Exceptions', 'Kalimera\Tests']);
+        ->ignoring([SailPortsConfigure::class, ComposerFileEditor::class, CommandOutputPrinter::class, RunLock::class, TranscriptLogger::class, 'Kalimera\Exceptions', 'Kalimera\Tests']);
 });
 
 arch('kalimera never uses debug or output functions', function (): void {

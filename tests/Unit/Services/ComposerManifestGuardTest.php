@@ -71,7 +71,7 @@ it('restores the manifest when composer gutted it during a successful command', 
         ]);
 });
 
-it('restores the manifest and reinstalls from the lock file before retrying a failed command', function (): void {
+it('restores the manifest and re-resolves before retrying a failed command', function (): void {
     $targetPath = tempDir();
     file_put_contents($targetPath.'/composer.json', healthyManifest());
     $processRunner = new FakeProcessRunner;
@@ -86,13 +86,42 @@ it('restores the manifest and reinstalls from the lock file before retrying a fa
     expect($processRunner->commandLines())->toBe([
         './vendor/bin/sail composer require laravel/horizon',
         'docker compose exec -T -u sail -e COMPOSER_MAX_PARALLEL_HTTP=1 laravel.test composer clear-cache',
-        'docker compose exec -T -u sail -e COMPOSER_MAX_PARALLEL_HTTP=1 laravel.test composer install --no-interaction',
+        'docker compose exec -T -u sail -e COMPOSER_MAX_PARALLEL_HTTP=1 laravel.test composer update --no-interaction',
         'docker compose exec -T -u sail -e COMPOSER_MAX_PARALLEL_HTTP=1 laravel.test composer require laravel/horizon',
+        'docker compose exec -T -u sail -e COMPOSER_MAX_PARALLEL_HTTP=1 laravel.test composer update --no-interaction',
     ]);
 
     $manifest = json_decode((string) file_get_contents($targetPath.'/composer.json'), true);
 
     expect($manifest['autoload'])->not->toBeEmpty();
+});
+
+it('re-resolves after restoring the manifest of a successful command', function (): void {
+    $targetPath = tempDir();
+    file_put_contents($targetPath.'/composer.json', healthyManifest());
+    $processRunner = new FakeProcessRunner;
+    $processRunner->onCommand('composer require', function () use ($targetPath): void {
+        file_put_contents($targetPath.'/composer.json', '{"require": {"laravel/horizon": "^5.48"}}');
+    });
+
+    makeComposerManifestGuard($targetPath, $processRunner)
+        ->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'], cwd: $targetPath);
+
+    expect($processRunner->commandLines())->toBe([
+        './vendor/bin/sail composer require laravel/horizon',
+        'docker compose exec -T -u sail -e COMPOSER_MAX_PARALLEL_HTTP=1 laravel.test composer update --no-interaction',
+    ]);
+});
+
+it('leaves vendor alone when the manifest survived the command', function (): void {
+    $targetPath = tempDir();
+    file_put_contents($targetPath.'/composer.json', healthyManifest());
+    $processRunner = new FakeProcessRunner;
+
+    makeComposerManifestGuard($targetPath, $processRunner)
+        ->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'], cwd: $targetPath);
+
+    expect($processRunner->commandLines())->toBe(['./vendor/bin/sail composer require laravel/horizon']);
 });
 
 it('restores the manifest before giving up on a command that keeps failing', function (): void {
@@ -114,13 +143,63 @@ it('restores the manifest before giving up on a command that keeps failing', fun
     expect($manifest['autoload'])->not->toBeEmpty();
 });
 
+it('restores a missing manifest before composer can invent a new project', function (): void {
+    $targetPath = tempDir();
+    file_put_contents($targetPath.'/composer.json', healthyManifest());
+    $processRunner = new FakeProcessRunner;
+    $composerManifestGuard = makeComposerManifestGuard($targetPath, $processRunner);
+
+    $composerManifestGuard->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'], cwd: $targetPath);
+
+    unlink($targetPath.'/composer.json');
+
+    $seenByComposer = null;
+    $processRunner->onCommand('composer require', function () use ($targetPath, &$seenByComposer): void {
+        $seenByComposer = @file_get_contents($targetPath.'/composer.json');
+    });
+
+    $composerManifestGuard->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/fortify'], cwd: $targetPath);
+
+    expect($seenByComposer)->toBe(healthyManifest());
+});
+
+it('repairs a gutted manifest before the command rather than only after it', function (): void {
+    $targetPath = tempDir();
+    file_put_contents($targetPath.'/composer.json', healthyManifest());
+    $processRunner = new FakeProcessRunner;
+    $composerManifestGuard = makeComposerManifestGuard($targetPath, $processRunner);
+
+    $composerManifestGuard->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'], cwd: $targetPath);
+
+    file_put_contents($targetPath.'/composer.json', '{"require": {"laravel/horizon": "^5.48"}}');
+
+    $seenByComposer = null;
+    $processRunner->onCommand('composer require', function () use ($targetPath, &$seenByComposer): void {
+        $seenByComposer = json_decode((string) file_get_contents($targetPath.'/composer.json'), true);
+    });
+
+    $composerManifestGuard->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/fortify'], cwd: $targetPath);
+
+    expect($seenByComposer['autoload']['psr-4']['App\\'])->toBe('app/');
+});
+
+it('never writes a manifest during a dry run', function (): void {
+    $targetPath = tempDir();
+    $processRunner = new FakeProcessRunner(dryRun: true);
+
+    makeComposerManifestGuard($targetPath, $processRunner)
+        ->runCommand(command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'], cwd: $targetPath);
+
+    expect(file_exists($targetPath.'/composer.json'))->toBeFalse();
+});
+
 it('delegates the remaining runner behaviour', function (): void {
     $targetPath = tempDir();
     $processRunner = new FakeProcessRunner(dryRun: true);
     $composerManifestGuard = makeComposerManifestGuard($targetPath, $processRunner);
 
     $composerManifestGuard->applyFileChange(description: 'do something', action: fn () => null);
-    $quietResult = $composerManifestGuard->runCommandQuietly(command: ['docker', 'info']);
+    $quietResult = $composerManifestGuard->probe(command: ['docker', 'info']);
 
     expect($composerManifestGuard->isDryRun())->toBeTrue()
         ->and($quietResult)->toBeTrue()

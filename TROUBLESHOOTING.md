@@ -9,8 +9,8 @@ how to fix it. Mirrored at `/troubleshooting` on kalimera-site.
 failed to create network <app>_sail: Error response from daemon: all predefined address pools have been fully subnetted
 ```
 
-**When:** Running `sail up -d --wait` while scaffolding a new app (kalimera Step 5, "Building and
-starting the Sail containers").
+**When:** Running `sail up -d --wait` while scaffolding a new app — the "Building and starting
+the Sail containers" step.
 
 **Why it happens:** Every Sail project gets its own dedicated Docker bridge network, and Sail
 never removes it once a project is deleted or abandoned. Docker Desktop's default address pool
@@ -49,7 +49,56 @@ cd ~/www && kalimera new <app-name> --continue --defaults
 `--continue` reuses the answers saved in the app's `.kalimera.json`, so `--defaults` only matters
 for the final "Scaffold the application now?" confirmation — include it anyway so nothing prompts.
 
-## Step 10 fails with "There are no commands defined in the boost namespace"
+If the application directory is not there at all — you deleted it to start over, or the first run
+died before it was created — `--continue` has nothing to resume and runs as an ordinary fresh
+scaffold. That is deliberate: a resume promises to leave the previous run's containers and volumes
+alone, which would be exactly the wrong thing to do while creating a new application under a name
+Docker still has a project for.
+
+It also reads `.kalimera-steps.json`, the list of steps the failed run finished, and skips them —
+so a resume starts at the step that broke instead of replaying the whole plan. Starting the Sail
+containers is the one exception and always runs: a checkpoint records that they were started once,
+not that they are up now. To force a completed step to run again, delete its entry from that file
+(or delete the file to replay everything).
+
+The two files work together, and that matters when the fix is to change an answer. Editing
+`.kalimera.json` — dropping a package that will not resolve, adding a quality tool you decided you
+want — only reaches the steps still left to run. A step already listed in `.kalimera-steps.json` is
+skipped no matter what its answers now say, so delete its entry there too when the edit belongs to
+work that already happened.
+
+## A resumed run replaced a config you edited, leaving a `.bak` file behind
+
+```
+WARN phpstan.neon.dist already existed and differed from the template — the original was kept as phpstan.neon.dist.bak.
+```
+
+**When:** Resuming with `kalimera new <app-name> --continue` after editing one of the files
+kalimera publishes (`pint.json`, `phpstan.neon.dist`, `rector.php`, the AgentGuard provider)
+while working out why the first run failed. A `phpstan.neon` you wrote between runs is moved
+aside the same way — it would otherwise shadow the published `phpstan.neon.dist` entirely, so
+it cannot stay, but it is not worth deleting either.
+
+**Why it happens:** Publishing a template is a copy, so whatever the destination already holds
+is overwritten. On a fresh scaffold that is nothing — none of the shipped templates collide with
+a file `laravel new` leaves behind. It only bites when a step re-runs under `--continue` over a
+file you touched in between, which is exactly when a config gets hand-edited. Rather than lose
+the edit silently, kalimera copies the existing file aside first and says so. A run that fails
+twice over the same file gets `.bak2`, `.bak3`, and so on, so a later backup never overwrites an
+earlier one.
+
+**Fix:** Nothing is lost — your version is the `.bak` file. Merge whatever you meant to keep back
+into the published file and delete the backup. To stop the step republishing at all on the next
+resume, add it to `.kalimera-steps.json` (see the entry above); to keep your file untouched
+instead, that is the only way, since a step that runs will publish its template.
+
+The one case where publishing is skipped is a backup that could not be written — a read-only
+directory, a full disk. The warning then reads "it was left as it is, and the template was not
+published over it": overwriting anyway would destroy the edit the backup exists to protect, and a
+template that failed to land is the more recoverable of the two — copy it in from
+`templates/` in the kalimera repo once the write problem is fixed.
+
+## "Installing Laravel Boost" fails with "There are no commands defined in the boost namespace"
 
 ```
 ERROR There are no commands defined in the "boost" namespace.
@@ -57,7 +106,7 @@ ERROR There are no commands defined in the "boost" namespace.
 
 Thrown by `sail artisan boost:install --guidelines --skills --mcp --no-interaction`.
 
-**When:** kalimera Step 10, "Installing Laravel Boost", immediately after
+**When:** The "Installing Laravel Boost" step, immediately after
 `composer require laravel/boost --dev`.
 
 **Why it happens:** The `composer require laravel/boost --dev` that runs just before this step
@@ -117,6 +166,42 @@ docker ps --format '{{.Names}}\t{{.Ports}}'
 
 Choosing new ports for the app you are *not* currently running avoids disturbing a live one. This
 touches only `.env`, so it is safe and reversible.
+
+## Migrations fail with "duplicate key value violates unique constraint pg_class_relname_nsp_index"
+
+```
+SQLSTATE[23505]: Unique violation: 7 ERROR:  duplicate key value violates unique constraint "pg_class_relname_nsp_index"
+DETAIL:  Key (relname, relnamespace)=(migrations_id_seq, 2200) already exists.
+(SQL: create table "migrations" ("id" serial not null primary key, ...))
+```
+
+**When:** Scaffolding a new app into a directory whose name was used by an earlier run that never
+finished. The MySQL wording is `SQLSTATE[42S01] ... Table 'migrations' already exists`.
+
+**Why it happens:** Compose derives its project name from the directory, and volumes are named
+`<project>_sail-pgsql`. A new scaffold under a name used before therefore mounts the *old*
+database. That volume can hold `migrations_id_seq` without the `migrations` table — Laravel's
+`hasTable('migrations')` returns false, issues `create table migrations (id serial ...)`, and the
+implicit sequence collides with the orphan.
+
+**Fix:** kalimera now handles this itself, in two places. Before the first `up` on a fresh
+scaffold, `SailStart` asks docker whether anything already answers to this project name — the
+`<project>-<service>-1` containers and the `<project>_sail-<service>` volumes — and runs
+`sail down -v` only if something does, naming what it is about to remove. Nothing found means
+nothing touched, which is the usual case; a `--continue` run keeps its data and is never asked.
+Worth reading that warning when it appears: the directory was created moments ago, so whatever it
+names belongs to an earlier run *or to another application that happens to share the name*, and
+`down -v` takes its database too. If that is a project you still want, stop, and scaffold under a
+different name. If a conflict still gets through, `AppFinalize`
+recreates the volume immediately rather than retrying three times first: `MigrationFailure` retries
+only when the database could not be *reached* (SQL class 08, MySQL 2002/2003/2006, or no output at
+all). Once the server has answered, its verdict will be the same on every attempt.
+
+To clear it by hand:
+
+```bash
+./vendor/bin/sail down -v && ./vendor/bin/sail up -d --wait && ./vendor/bin/sail artisan migrate
+```
 
 ## The AI-agent guard silently does nothing — destructive commands still run
 

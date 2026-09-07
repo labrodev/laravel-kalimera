@@ -11,25 +11,26 @@
         }
     ],
     "require": {
-        "php": "^8.4",
+        "php": "^8.4.1",
         "laravel/prompts": "^0.3",
-        "symfony/process": "^7.0"
+        "symfony/process": "^7.0 || ^8.0"
     },
     "require-dev": {
         "laravel/pint": "^1.20",
-        "pestphp/pest": "^4.0",
+        "pestphp/pest": "^5.0",
         "phpstan/phpstan": "^2.0",
         "rector/rector": "^2.0",
-        "mockery/mockery": "^1.6"
+        "mockery/mockery": "^1.6.12"
     },
     "scripts": {
-        "phpstan": "vendor/bin/phpstan analyse",
+        "phpstan": "vendor/bin/phpstan analyse --memory-limit=1G",
         "phpstan-clear": "vendor/bin/phpstan clear-result-cache",
         "pint:dry": "vendor/bin/pint --test",
         "pint:fix": "vendor/bin/pint",
         "rector:dry": "vendor/bin/rector --dry-run",
         "rector:fix": "vendor/bin/rector process",
         "test": "vendor/bin/pest",
+        "test:coverage": "vendor/bin/pest --coverage",
         "quality": [
             "@rector:dry",
             "@pint:dry",

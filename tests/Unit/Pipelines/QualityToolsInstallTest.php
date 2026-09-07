@@ -79,9 +79,29 @@ it('replaces the skeleton phpstan config with the template and baseline', functi
 
     $step->execute();
 
+    // Deleted outright, and no .bak left behind: on a fresh scaffold that file is the
+    // skeleton's, and a backup of it would be litter in every generated application.
     expect(file_exists($installerOption->targetPath.'/phpstan.neon'))->toBeFalse()
+        ->and(file_exists($installerOption->targetPath.'/phpstan.neon.bak'))->toBeFalse()
         ->and(file_exists($installerOption->targetPath.'/phpstan.neon.dist'))->toBeTrue()
         ->and(file_exists($installerOption->targetPath.'/phpstan-baseline.neon'))->toBeTrue();
+});
+
+// A replay reaches this step over a phpstan.neon that the user may well have written while
+// narrowing the analysis to work out why the first run failed. It still has to go — it would
+// shadow the published .dist — but silently deleting someone's file is not the way.
+it('keeps a phpstan config written between runs when resuming', function (): void {
+    $installerOption = makeInstallerOption(['qualityTools' => ['phpstan'], 'resume' => true]);
+    $processRunner = new FakeProcessRunner;
+    $step = makeQualityToolsInstall($installerOption, $processRunner);
+
+    file_put_contents($installerOption->targetPath.'/phpstan.neon', "parameters:\n    level: 3\n");
+
+    $step->execute();
+
+    expect(file_exists($installerOption->targetPath.'/phpstan.neon'))->toBeFalse()
+        ->and(file_get_contents($installerOption->targetPath.'/phpstan.neon.bak'))->toContain('level: 3')
+        ->and(file_exists($installerOption->targetPath.'/phpstan.neon.dist'))->toBeTrue();
 });
 
 it('gitignores the ide-helper files only once across repeated runs', function (): void {

@@ -17,7 +17,7 @@ readonly class ConfigLoader
 
     private const array PRESELECTED_KEYS = [
         'starterKit', 'installInertia', 'aroundPackages', 'sailServices', 'phpConstraint',
-        'qualityTools', 'installPostmark', 'coreNamespace', 'boostAgents', 'boostSkillRepos',
+        'qualityTools', 'installPostmark', 'installBoost', 'coreNamespace', 'boostAgents', 'boostSkillRepos',
         'extraPackages', 'extraDevPackages',
     ];
 
@@ -132,6 +132,7 @@ readonly class ConfigLoader
             phpConstraint: $phpConstraint,
             qualityTools: $this->choiceList(allowed: array_keys(OptionCollector::QUALITY_TOOLS), fallback: $fallback->qualityTools, key: 'qualityTools', source: $source, values: $preselected),
             installPostmark: $this->bool(fallback: $fallback->installPostmark, key: 'installPostmark', source: $source, values: $preselected),
+            installBoost: $this->bool(fallback: $fallback->installBoost, key: 'installBoost', source: $source, values: $preselected),
             boostAgents: $this->choiceList(allowed: array_keys(OptionCollector::BOOST_AGENTS), fallback: $fallback->boostAgents, key: 'boostAgents', source: $source, values: $preselected),
             boostSkillRepos: $this->stringList(fallback: $fallback->boostSkillRepos, key: 'boostSkillRepos', source: $source, values: $preselected),
             extraPackages: $this->stringList(fallback: $fallback->extraPackages, key: 'extraPackages', source: $source, values: $preselected),

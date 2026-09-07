@@ -96,3 +96,17 @@ it('forgetting a missing state file is a no-op', function (): void {
 
     expect(true)->toBeTrue();
 });
+
+it('keeps the invocation flags out of the state file', function (): void {
+    $installerOption = makeInstallerOption(['dryRun' => true]);
+    mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true);
+
+    (new InstallerOptionStore)->save($installerOption);
+
+    $decoded = json_decode((string) file_get_contents($installerOption->targetPath.'/.kalimera.json'), true);
+
+    // Both come from the current run, so a stored value could only mislead a reader.
+    expect($decoded)->not->toHaveKey('dryRun')
+        ->and($decoded)->not->toHaveKey('resume')
+        ->and($decoded)->toHaveKey('starterKit');
+});

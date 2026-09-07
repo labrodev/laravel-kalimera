@@ -11,6 +11,7 @@ it('runs laravel new with the matching starter kit flag', function (): void {
     foreach ($kitFlags as $starterKit => $flag) {
         $installerOption = makeInstallerOption(['starterKit' => $starterKit]);
         $processRunner = new FakeProcessRunner;
+        $processRunner->onCommand('laravel new', fn () => mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true));
 
         new AppCreate(installerOption: $installerOption, processRunner: $processRunner)->execute();
 
@@ -24,6 +25,7 @@ it('runs laravel new with the matching starter kit flag', function (): void {
 it('runs laravel new without a kit flag for the plain skeleton', function (): void {
     $installerOption = makeInstallerOption(['starterKit' => 'none']);
     $processRunner = new FakeProcessRunner;
+    $processRunner->onCommand('laravel new', fn () => mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true));
 
     new AppCreate(installerOption: $installerOption, processRunner: $processRunner)->execute();
 
@@ -54,7 +56,11 @@ it('skips laravel new and normalizes the providers file when the app already exi
     new AppCreate(installerOption: $installerOption, processRunner: $processRunner)->execute();
 
     expect($processRunner->commands)->toBe([])
-        ->and($processRunner->fileActions)->toBe(['normalize bootstrap/providers.php to inline class names', 'save the chosen answers to .kalimera.json so --continue can reuse them'])
+        ->and($processRunner->fileActions)->toBe([
+            'normalize bootstrap/providers.php to inline class names',
+            'gitignore the .kalimera.json and .kalimera-steps.json resume state',
+            'save the chosen answers to .kalimera.json so --continue can reuse them',
+        ])
         ->and(file_get_contents($installerOption->targetPath.'/bootstrap/providers.php'))->toBe(
             "<?php\n\nreturn [\n"
             ."    App\\Providers\\AppServiceProvider::class,\n"
@@ -77,10 +83,11 @@ it('gitignores the transcript inside the created application', function (): void
     )->execute();
 
     expect($processRunner->fileActions)->toContain('gitignore the kalimera.log transcript')
-        ->and(file_get_contents($installerOption->targetPath.'/.gitignore'))->toBe("/vendor\n/kalimera.log\n");
+        ->and(file_get_contents($installerOption->targetPath.'/.gitignore'))
+        ->toBe("/vendor\n/kalimera.log\n/.kalimera.json\n/.kalimera-steps.json\n");
 });
 
-it('leaves the gitignore untouched when no transcript is written', function (): void {
+it('gitignores the resume state even when no transcript is written', function (): void {
     $installerOption = makeInstallerOption();
     $processRunner = new FakeProcessRunner;
 
@@ -90,5 +97,6 @@ it('leaves the gitignore untouched when no transcript is written', function (): 
     new AppCreate(installerOption: $installerOption, processRunner: $processRunner)->execute();
 
     expect($processRunner->fileActions)->not->toContain('gitignore the kalimera.log transcript')
-        ->and(file_get_contents($installerOption->targetPath.'/.gitignore'))->toBe("/vendor\n");
+        ->and(file_get_contents($installerOption->targetPath.'/.gitignore'))
+        ->toBe("/vendor\n/.kalimera.json\n/.kalimera-steps.json\n");
 });

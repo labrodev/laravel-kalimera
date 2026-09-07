@@ -5,36 +5,92 @@ on:
     branches: [main]
   pull_request:
 
+# Checkout is the only thing here that touches the repository, and reading is all it needs.
+permissions:
+  contents: read
+
 jobs:
   quality:
-    name: PHP ${{ matrix.php }}
-    runs-on: ubuntu-latest
+    name: PHP ${{ matrix.php }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         php: ['8.4', '8.5']
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup PHP ${{ matrix.php }}
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: ${{ matrix.php }}
           coverage: none
 
       - name: Install dependencies
-        uses: ramsey/composer-install@v3
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # v3
 
       - name: Pint
+        # Formatting and static analysis are platform-independent, so one OS is enough.
+        if: matrix.os == 'ubuntu-latest'
         run: composer pint:dry
 
       - name: PHPStan
+        if: matrix.os == 'ubuntu-latest'
         run: composer phpstan
 
+      # macOS is the platform kalimera is actually used on, and the one whose quirks the
+      # process handling works around — VirtioFS write visibility, and a TTY-mode wait()
+      # that misreports success. Those paths only get exercised here.
       - name: Pest
         run: composer test
 
       - name: Rector
-        if: matrix.php == '8.4'
+        if: matrix.os == 'ubuntu-latest' && matrix.php == '8.4'
         run: composer rector:dry
+
+  lowest:
+    name: Lowest dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      # Every constraint in composer.json is a claim about what works. Resolution always
+      # picks the newest, so without this the declared floors are never executed — this
+      # job is what caught mockery ^1.6 emitting PHP 8.4 deprecations at its lower bound.
+      - name: Install lowest dependencies
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # v3
+        with:
+          dependency-versions: lowest
+
+      - name: Pest
+        run: composer test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          coverage: pcov
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # v3
+
+      # Informational, not a gate: the number exists so gaps are visible when deciding
+      # what to test next, not so a PR can be blocked on a decimal point.
+      - name: Pest with coverage
+        run: composer test:coverage

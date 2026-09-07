@@ -40,6 +40,7 @@
                 "phpConstraint": "^8.5",
                 "qualityTools": ["pint", "phpstan", "rector"],
                 "installPostmark": false,
+                "installBoost": true,
                 "coreNamespace": "Core",
                 "boostAgents": ["claude_code", "cursor", "codex"],
                 "boostSkillRepos": [],

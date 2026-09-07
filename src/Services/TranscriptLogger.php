@@ -37,12 +37,21 @@ class TranscriptLogger
     {
         $this->write('Kalimera transcript');
         $this->write('argv: '.implode(' ', $arguments));
-        $this->write('Child process output is streamed to the terminal and captured below.');
+        $this->write('Child process output is condensed on the terminal and captured in full below.');
     }
 
     public function step(int $index, string $label, int $total): void
     {
         $this->write(sprintf('Step %d/%d — %s', $index, $total, $label));
+    }
+
+    /**
+     * A step the checkpoint reports as finished by an earlier run. The transcript of a
+     * --continue would otherwise show a gap where the work used to be.
+     */
+    public function stepSkipped(int $index, string $label, int $total): void
+    {
+        $this->write(sprintf('Step %d/%d — %s [skipped: completed by an earlier run]', $index, $total, $label));
     }
 
     public function command(?string $cwd, string $printable): void
@@ -58,6 +67,20 @@ class TranscriptLogger
     public function quietCommand(string $printable, bool $success): void
     {
         $this->write(sprintf('quiet [%s]: %s', $success ? 'ok' : 'failed', $printable));
+    }
+
+    public function quietSkipped(string $printable): void
+    {
+        $this->write('quiet [dry-run]: '.$printable);
+    }
+
+    /**
+     * A quiet command that never got to report an exit code — it timed out, or could not
+     * be launched. The run continues, so the reason only survives here.
+     */
+    public function quietAborted(string $printable, string $reason): void
+    {
+        $this->write(sprintf('quiet [aborted]: %s — %s', $printable, $reason));
     }
 
     public function fileAction(string $description, bool $dryRun): void

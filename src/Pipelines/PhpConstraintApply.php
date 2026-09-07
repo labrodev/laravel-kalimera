@@ -24,9 +24,10 @@ readonly class PhpConstraintApply implements Pipeline
 
     public function execute(): void
     {
-        // Composer edits its own composer.json inside the container: a host-side write
-        // followed by an immediate in-container read can surface an empty file through
-        // the macOS VirtioFS mount, and composer silently treats empty as a new project.
+        // Let composer make this edit rather than rewriting composer.json on the host:
+        // composer owns the manifest between the container's own require commands, and a
+        // host-side edit dropped in beside them is one more writer racing for the file
+        // that the next step hands straight back to composer.
         $this->processRunner->runCommand(
             command: $this->sailCommandBuilder->composer(
                 'require',

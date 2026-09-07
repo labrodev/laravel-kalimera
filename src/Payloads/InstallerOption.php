@@ -27,12 +27,14 @@ readonly class InstallerOption
         public array $qualityTools,
         public array $additionalPackages,
         public bool $installPostmark,
+        public bool $installBoost,
         public array $boostAgents,
         public array $boostSkillRepos,
         public array $extraPackages,
         public array $extraDevPackages,
         public bool $dryRun,
         public ?string $coreNamespace,
+        public bool $resume = false,
     ) {}
 
     public function usesDatabaseService(): bool

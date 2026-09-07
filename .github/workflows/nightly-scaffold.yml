@@ -1,0 +1,265 @@
+name: Nightly scaffold
+
+# Every test in the suite fakes the process runner, which proves kalimera emits the right
+# commands but never that they succeed. Every bug found in real use so far — an orphaned
+# Postgres sequence, an inherited volume, a frozen progress line — survived the suite and
+# only showed up in an actual run. This is that run.
+#
+# Nightly rather than per-PR: a cold Sail image build is 10-15 minutes.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+# Nothing here reads or writes the repository — it scaffolds an application in a temporary
+# directory. The job does run install scripts for the whole default package set, so it has
+# no business holding a token that could push.
+permissions: {}
+
+jobs:
+  scaffold:
+    name: Scaffold a real application
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # v3
+
+      - name: Install the Laravel installer
+        run: |
+          composer global require laravel/installer --no-interaction
+          echo "$(composer config --global home)/vendor/bin" >> "$GITHUB_PATH"
+
+      - name: Scaffold
+        working-directory: ${{ runner.temp }}
+        run: ${{ github.workspace }}/bin/kalimera new nightly-app --defaults --log
+
+      # `laravel new` and `sail:install` succeeding is not the bar — the containers have to
+      # be up and the migrations actually applied, which is where the real failures land.
+      #
+      # Neither obvious command asserts that on its own. `sail ps` with nothing running
+      # prints an empty table and exits 0, and `migrate:status` exits non-zero only when the
+      # migrations table is missing entirely — a run that created the table and then failed
+      # on a later migration still passes it while listing rows as Pending. Both have to be
+      # read, not just run. `set -o pipefail` because the default shell sets -e but not that.
+      - name: Assert the application is running
+        working-directory: ${{ runner.temp }}/nightly-app
+        run: |
+          set -o pipefail
+
+          if ! docker compose ps --status running -q | grep -q .; then
+            echo "The scaffold finished but no containers are running."
+            docker compose ps -a
+            exit 1
+          fi
+
+          ./vendor/bin/sail artisan migrate:status
+
+          if ./vendor/bin/sail artisan migrate:status | grep -q Pending; then
+            echo "Migrations were left pending."
+            exit 1
+          fi
+
+      # The transcript is the only record of what the child processes printed, and a
+      # failed nightly is exactly when it is needed.
+      - name: Upload the transcript
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kalimera-transcript
+          path: ${{ runner.temp }}/nightly-app/kalimera.log
+          if-no-files-found: warn
+
+      # No working-directory: the runner resolves that before the shell starts, so when the
+      # scaffold died before `laravel new` created the directory — the most interesting kind
+      # of nightly failure — this step would fail on the missing path and bury the real error.
+      - name: Tear down
+        if: always()
+        run: |
+          cd "$RUNNER_TEMP/nightly-app" || exit 0
+          ./vendor/bin/sail down -v || true
+
+  # The suite proves --continue skips the right steps against a faked process runner. What
+  # it cannot prove is that a half-scaffolded application on disk — containers already up,
+  # vendor/ already written, .env already rewired — is one the remaining steps can finish.
+  # That only shows up against real infrastructure, so this job breaks a run on purpose and
+  # resumes it.
+  #
+  # Its plan is deliberately lean (no starter kit, no quality tools, one service): the
+  # scaffold job above already covers the full default plan, and this one is about the
+  # resume machinery, not the breadth of what gets installed.
+  resume:
+    name: Resume a failed scaffold
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Install dependencies
+        uses: ramsey/composer-install@a8d0d959dab41457692a5e2041bd9b757a119e3f # v3
+
+      - name: Install the Laravel installer
+        run: |
+          composer global require laravel/installer --no-interaction
+          echo "$(composer config --global home)/vendor/bin" >> "$GITHUB_PATH"
+
+      # A package that cannot resolve is the cheapest way to stop a run at a known step:
+      # AdditionalPackagesInstall lets the failure through rather than warning past it.
+      - name: Write a config that breaks the run partway
+        working-directory: ${{ runner.temp }}
+        run: |
+          cat > kalimera.config.json <<'JSON'
+          {
+            "preselected": {
+              "starterKit": "none",
+              "installInertia": false,
+              "aroundPackages": [],
+              "sailServices": ["pgsql"],
+              "qualityTools": [],
+              "boostAgents": [],
+              "boostSkillRepos": [],
+              "coreNamespace": null,
+              "extraPackages": [],
+              "extraDevPackages": [],
+              "installPostmark": false,
+              "installBoost": false
+            },
+            "additionalPackages": [
+              {
+                "package": "kalimera/no-such-package",
+                "label": "A package that cannot resolve",
+                "preselected": true
+              }
+            ]
+          }
+          JSON
+
+      - name: Scaffold until it breaks
+        working-directory: ${{ runner.temp }}
+        run: |
+          if "${{ github.workspace }}/bin/kalimera" new resume-app --defaults --log; then
+            echo "Expected the scaffold to stop on the unresolvable package, but it succeeded."
+            exit 1
+          fi
+
+      - name: Assert the finished steps were checkpointed
+        run: |
+          # shellcheck disable=SC2016 # the single quotes are the point: $path and $recorded
+          # belong to PHP, and the shell expanding them would empty the script.
+          php -r '
+            $path = getenv("RUNNER_TEMP")."/resume-app/.kalimera-steps.json";
+            if (! file_exists($path)) {
+              fwrite(STDERR, "No checkpoint was written.\n");
+              exit(1);
+            }
+            $recorded = json_decode(file_get_contents($path), true);
+            fwrite(STDOUT, "checkpointed: ".implode(", ", $recorded)."\n");
+            foreach (["AppCreate", "SailInstall", "SailStart", "PhpConstraintApply"] as $step) {
+              if (! in_array($step, $recorded, true)) {
+                fwrite(STDERR, $step." finished but was not checkpointed.\n");
+                exit(1);
+              }
+            }
+            if (in_array("AdditionalPackagesInstall", $recorded, true)) {
+              fwrite(STDERR, "The step that failed was checkpointed anyway.\n");
+              exit(1);
+            }
+          '
+
+      # What a user does between the two runs: fix the thing that broke. The catalog entry
+      # is not enough — a resume reads its answers from .kalimera.json, not from the config.
+      - name: Drop the unresolvable package from the saved answers
+        run: |
+          # shellcheck disable=SC2016 # PHP variables, not shell ones — see the step above.
+          php -r '
+            $path = getenv("RUNNER_TEMP")."/resume-app/.kalimera.json";
+            $answers = json_decode(file_get_contents($path), true);
+            $answers["additionalPackages"] = [];
+            file_put_contents($path, json_encode($answers, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+          '
+
+      - name: Resume
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${{ github.workspace }}/bin/kalimera" new resume-app --defaults --continue --log="${{ runner.temp }}/resume.log"
+
+      - name: Assert the resume skipped the finished steps
+        run: |
+          LOG="${{ runner.temp }}/resume.log"
+
+          grep -qF 'Creating the Laravel application [skipped: completed by an earlier run]' "$LOG"
+
+          # Anchored to the transcript's own command prefix — ShellRunner renders a command
+          # as "[<cwd basename>] laravel new …". An unanchored match would also hit the
+          # captured child output the transcript records verbatim, so any composer or npm
+          # banner mentioning the phrase would fail a perfectly healthy resume.
+          if grep -q '\] laravel new' "$LOG"; then
+            echo "The resume re-created the application instead of continuing into it."
+            exit 1
+          fi
+
+          # SailStart is checkpointed like every other step and must run anyway: the
+          # containers being started once says nothing about them being up now.
+          if grep -qF 'Building and starting the Sail containers [skipped' "$LOG"; then
+            echo "The resume assumed the containers were still up instead of starting them."
+            exit 1
+          fi
+
+          grep -qF 'sail up -d --wait' "$LOG"
+
+      # The point of the whole exercise: a resumed run has to leave the same working
+      # application behind as one that never failed.
+      - name: Assert the resumed application is running
+        working-directory: ${{ runner.temp }}/resume-app
+        run: |
+          set -o pipefail
+
+          if ! docker compose ps --status running -q | grep -q .; then
+            echo "The resume finished but no containers are running."
+            docker compose ps -a
+            exit 1
+          fi
+
+          ./vendor/bin/sail artisan migrate:status
+
+          if ./vendor/bin/sail artisan migrate:status | grep -q Pending; then
+            echo "The resumed run left migrations pending."
+            exit 1
+          fi
+
+          test ! -f .kalimera-steps.json
+          test ! -f .kalimera.json
+          grep -qF '/.kalimera-steps.json' .gitignore
+
+      - name: Upload the transcripts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kalimera-resume-transcripts
+          path: |
+            ${{ runner.temp }}/resume-app/kalimera.log
+            ${{ runner.temp }}/resume.log
+          if-no-files-found: warn
+
+      - name: Tear down
+        if: always()
+        run: |
+          cd "$RUNNER_TEMP/resume-app" || exit 0
+          ./vendor/bin/sail down -v || true

@@ -68,7 +68,7 @@ readonly class AdditionalPackagesInstall implements Pipeline
         $arguments = $dev ? ['require', '--dev', ...$packages] : ['require', ...$packages];
 
         $this->processRunner->runCommand(
-            attempts: 3,
+            attempts: ProcessRunner::NETWORK_ATTEMPTS,
             command: $this->sailCommandBuilder->composer(...$arguments),
             cwd: $this->sailCommandBuilder->path(),
         );

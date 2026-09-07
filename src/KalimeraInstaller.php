@@ -27,6 +27,7 @@ use Kalimera\Pipelines\SailInstall;
 use Kalimera\Pipelines\SailPortsConfigure;
 use Kalimera\Pipelines\SailRuntimeConfigure;
 use Kalimera\Pipelines\SailStart;
+use Kalimera\Services\CommandOutputPrinter;
 use Kalimera\Services\ComposerManifestGuard;
 use Kalimera\Services\ConfigLoader;
 use Kalimera\Services\NetworkPortChecker;
@@ -34,6 +35,7 @@ use Kalimera\Services\OptionCollector;
 use Kalimera\Services\RunLock;
 use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Services\ShellRunner;
+use Kalimera\Services\StepCheckpoint;
 use Kalimera\Services\TranscriptLogger;
 
 use function Laravel\Prompts\confirm;
@@ -53,6 +55,16 @@ readonly class KalimeraInstaller
      * Default transcript file, written inside the created application and gitignored there.
      */
     private const string TRANSCRIPT_FILE = 'kalimera.log';
+
+    /**
+     * Steps that run on --continue even when the checkpoint says they finished, because
+     * what they leave behind is a live process rather than a file: the containers were
+     * started once, which says nothing about whether they are up now — a reboot between
+     * the two runs is enough to make it false, and every later step talks to them through
+     * sail. `up -d --wait` costs seconds when they are already running, so re-running is
+     * the cheap side of the trade.
+     */
+    private const array ALWAYS_RUN = [SailStart::class];
 
     public function __construct(
         private ?ExecutableFinder $executableFinder = null,
@@ -87,8 +99,18 @@ readonly class KalimeraInstaller
             ? null
             : new TranscriptLogger($argument->logPath === '' ? null : $argument->logPath);
 
+        // A dry run executes nothing, so there is no output to condense and nothing the
+        // flag would change.
+        if (! $argument->verbose && ! $argument->dryRun) {
+            info('Command output is condensed to a progress line — pass --verbose to stream it in full.');
+        }
+
         try {
-            $processRunner = $this->processRunner ?? new ShellRunner(dryRun: $argument->dryRun, transcriptLogger: $transcriptLogger);
+            $processRunner = $this->processRunner ?? new ShellRunner(
+                dryRun: $argument->dryRun,
+                transcriptLogger: $transcriptLogger,
+                commandOutputPrinter: new CommandOutputPrinter(verbose: $argument->verbose),
+            );
 
             $transcriptLogger?->begin($argv);
 
@@ -130,11 +152,27 @@ readonly class KalimeraInstaller
             );
             $total = count($steps);
 
+            $stepCheckpoint = new StepCheckpoint(
+                targetPath: $installerOption->targetPath,
+                enabled: ! $argument->dryRun,
+            );
+
             foreach ($steps as $index => $step) {
+                if ($this->isSettled(installerOption: $installerOption, step: $step, stepCheckpoint: $stepCheckpoint)) {
+                    info(sprintf('%s Step %d/%d — %s (done by the previous run — skipping)', PHP_EOL.'▶', $index + 1, $total, $step->label()));
+                    $transcriptLogger?->stepSkipped(index: $index + 1, label: $step->label(), total: $total);
+
+                    continue;
+                }
+
                 info(sprintf('%s Step %d/%d — %s', PHP_EOL.'▶', $index + 1, $total, $step->label()));
                 $transcriptLogger?->step(index: $index + 1, label: $step->label(), total: $total);
                 $step->execute();
+                $stepCheckpoint->record($step);
             }
+
+            // The plan finished, so there is nothing left to resume into.
+            $stepCheckpoint->forget();
 
             $this->farewell($installerOption);
 
@@ -151,6 +189,18 @@ readonly class KalimeraInstaller
 
             return 1;
         }
+    }
+
+    private function isSettled(InstallerOption $installerOption, Pipeline $step, StepCheckpoint $stepCheckpoint): bool
+    {
+        // Without --continue the checkpoint is not consulted at all: a fresh run into an
+        // existing directory is already refused, so anything still on disk there belongs
+        // to a run the user did not ask to resume.
+        if (! $installerOption->resume || in_array($step::class, self::ALWAYS_RUN, true)) {
+            return false;
+        }
+
+        return $stepCheckpoint->completed($step);
     }
 
     /**
@@ -187,7 +237,9 @@ readonly class KalimeraInstaller
             $steps[] = new AdditionalPackagesInstall(catalog: $installerConfig->additionalPackages, installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
         }
 
-        $steps[] = new BoostInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
+        if ($installerOption->installBoost) {
+            $steps[] = new BoostInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
+        }
 
         if ($installerOption->installPostmark) {
             $steps[] = new PostmarkInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
@@ -245,7 +297,9 @@ readonly class KalimeraInstaller
                 ['Quality tools', $list($installerOption->qualityTools)],
                 ['Additional packages', $list($installerOption->additionalPackages)],
                 ['Postmark', $installerOption->installPostmark ? 'yes' : 'no'],
-                ['Boost agents', $installerOption->boostAgents === [] ? 'ask during boost:install' : implode(', ', $installerOption->boostAgents)],
+                ['Boost agents', $installerOption->installBoost
+                    ? ($installerOption->boostAgents === [] ? 'ask during boost:install' : implode(', ', $installerOption->boostAgents))
+                    : 'Boost not installed'],
                 ['Boost skills repos', $list($installerOption->boostSkillRepos)],
                 ['Extra packages', $list($installerOption->extraPackages)],
                 ['Extra dev packages', $list($installerOption->extraDevPackages)],
@@ -311,12 +365,15 @@ SUN;
         Options:
           --dry-run        Print every command without executing anything
           --defaults       Skip all prompts and accept the preselected answers
-          --continue       Resume into an existing app directory after a failed run
+          --continue       Resume into an existing app directory after a failed run,
+                           skipping the steps the previous run already finished
           --config=path    Load the preselected answers and the package catalog from
                            a JSON config (kalimera.config.json in the current directory
                            is picked up automatically)
           --log[=path]     Write a transcript of commands and outcomes to a log file
                            (defaults to kalimera.log inside the new application)
+          --verbose, -v    Stream the raw output of every command instead of condensing
+                           it to a progress line (the transcript is unaffected)
 
         USAGE);
     }

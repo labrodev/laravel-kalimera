@@ -30,7 +30,7 @@ readonly class BoostInstall implements Pipeline
     public function execute(): void
     {
         $this->processRunner->runCommand(
-            attempts: 3,
+            attempts: ProcessRunner::NETWORK_ATTEMPTS,
             command: $this->sailCommandBuilder->composer('require', 'laravel/boost', '--dev'),
             cwd: $this->sailCommandBuilder->path(),
         );
@@ -61,6 +61,39 @@ readonly class BoostInstall implements Pipeline
             } catch (Throwable $exception) {
                 warning(sprintf('Skills from %s could not be added — skipping it. %s', $repository, $exception->getMessage()));
             }
+        }
+
+        $this->updateGuidelines();
+    }
+
+    /**
+     * `boost:install` writes whatever guidance the pinned release happens to bundle, so a
+     * scaffold created the day before a Boost release starts on stale rules. `boost:update`
+     * refreshes the guidelines and skills that install just wrote, and it runs last so the
+     * repositories added above are refreshed along with them.
+     *
+     * Discovery is off because it exists only to prompt, and there is nobody here to answer:
+     * the command already declines to prompt on a non-interactive input, but that is a
+     * property of how sail happens to attach the terminal rather than something this
+     * pipeline controls, and a scaffold that stops dead on a hidden multiselect is the one
+     * outcome worth ruling out by hand.
+     *
+     * Failure is a warning rather than an abort. The update is a refresh of guidance that
+     * install has already written — the application is complete and correct without it —
+     * and boost:update exits non-zero on its own for a project whose boost.json carries no
+     * agents, which is exactly the shape the unattended install leaves behind when it
+     * detects none. Losing the whole scaffold at step 10 over newer wording is a worse
+     * trade than starting on the bundled guidance.
+     */
+    private function updateGuidelines(): void
+    {
+        try {
+            $this->processRunner->runCommand(
+                command: $this->sailCommandBuilder->artisan('boost:update', '--no-discover', '--no-interaction'),
+                cwd: $this->sailCommandBuilder->path(),
+            );
+        } catch (Throwable $exception) {
+            warning(sprintf('Boost guidelines could not be updated — the bundled guidance was kept. %s', $exception->getMessage()));
         }
     }
 

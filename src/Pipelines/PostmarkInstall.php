@@ -32,8 +32,14 @@ readonly class PostmarkInstall implements Pipeline
     public function execute(): void
     {
         $this->processRunner->runCommand(
-            attempts: 3,
-            command: $this->sailCommandBuilder->composer('require', 'wildbit/postmark-php'),
+            attempts: ProcessRunner::NETWORK_ATTEMPTS,
+            // -W is load-bearing, not defensive. Laravel 13 allows guzzle ^7.8.2 || ^8.0, so a
+            // fresh app locks the newest — 8.x — while the Postmark SDK still caps at ^7.8.
+            // Without it composer refuses to touch a package the partial update did not name
+            // and the require dies on an unsatisfiable guzzle. Letting it move guzzle back to
+            // 7.x costs nothing: the framework supports that range just as fully, and nothing
+            // else in the scaffold asks for 8.
+            command: $this->sailCommandBuilder->composer('require', '-W', 'wildbit/postmark-php'),
             cwd: $this->sailCommandBuilder->path(),
         );
 

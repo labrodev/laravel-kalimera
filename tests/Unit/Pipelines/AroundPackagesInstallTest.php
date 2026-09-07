@@ -100,15 +100,19 @@ it('throws when the repaired providers file still fails linting', function (): v
         ->toThrow(ProvidersRepairFailedException::class);
 });
 
+function publishFortifyConfig(InstallerOption $installerOption): void
+{
+    $path = $installerOption->targetPath.'/config/fortify.php';
+
+    mkdir(directory: dirname($path), permissions: 0755, recursive: true);
+    file_put_contents($path, "<?php\n\nreturn [];\n");
+}
+
 it('skips fortify when the starter kit already ships it', function (): void {
     $installerOption = makeInstallerOption(['aroundPackages' => ['fortify']]);
     $processRunner = new FakeProcessRunner;
 
-    mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true);
-    file_put_contents(
-        $installerOption->targetPath.'/composer.json',
-        '{"require": {"laravel/fortify": "^1.0"}}',
-    );
+    publishFortifyConfig($installerOption);
 
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 
@@ -120,7 +124,25 @@ it('installs fortify when the starter kit does not ship it', function (): void {
     $processRunner = new FakeProcessRunner;
 
     writeProvidersFile($installerOption, "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n");
-    file_put_contents($installerOption->targetPath.'/composer.json', '{"require": {}}');
+
+    makeAroundPackagesInstall($installerOption, $processRunner)->execute();
+
+    expect($processRunner->commandLines())->toBe([
+        './vendor/bin/sail composer require laravel/fortify',
+        './vendor/bin/sail artisan fortify:install',
+    ]);
+});
+
+// The --continue case: an earlier run required the package and then died before
+// fortify:install published anything. Reading composer.json would call that "already
+// shipped by the starter kit" and skip the install, so the resumed run would report
+// success over an application that has Fortify required but not installed.
+it('installs fortify when an earlier run required the package but never installed it', function (): void {
+    $installerOption = makeInstallerOption(['aroundPackages' => ['fortify']]);
+    $processRunner = new FakeProcessRunner;
+
+    writeProvidersFile($installerOption, "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n");
+    file_put_contents($installerOption->targetPath.'/composer.json', '{"require": {"laravel/fortify": "^1.0"}}');
 
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 

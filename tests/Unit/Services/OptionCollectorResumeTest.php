@@ -24,5 +24,24 @@ it('resumes with the saved answers instead of prompting again', function (): voi
 
     expect($resumed->starterKit)->toBe('vue')
         ->and($resumed->sailServices)->toBe(['pgsql', 'redis', 'mailpit'])
-        ->and($resumed->targetPath)->toBe($installerOption->targetPath);
+        ->and($resumed->targetPath)->toBe($installerOption->targetPath)
+        ->and($resumed->resume)->toBeTrue();
+});
+
+// Resuming into a directory that is not there scaffolds a brand-new application, so it
+// must not inherit a resumed run's promise to leave the previous project's containers
+// and volumes alone — SailStart reads this flag to decide exactly that.
+it('does not count as a resume when the application directory is gone', function (): void {
+    $targetPath = sys_get_temp_dir().'/kalimera-never-created-'.bin2hex(random_bytes(4));
+
+    $collected = (new OptionCollector)(
+        dryRun: false,
+        installerConfig: InstallerConfig::builtIn(),
+        presetName: $targetPath,
+        resume: true,
+        useDefaults: true,
+    );
+
+    expect($collected->resume)->toBeFalse()
+        ->and($collected->targetPath)->toBe($targetPath);
 });

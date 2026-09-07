@@ -17,10 +17,13 @@ readonly class InstallerOptionStore
             mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true);
         }
 
-        $encoded = json_encode(
-            get_object_vars($installerOption),
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
-        );
+        $answers = get_object_vars($installerOption);
+
+        // These two describe the invocation, not the answers, and load() always takes
+        // them from the current run — persisting them would only mislead a reader.
+        unset($answers['dryRun'], $answers['resume']);
+
+        $encoded = json_encode($answers, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
         (new FileWriter)(contents: $encoded."\n", path: $this->path($installerOption->targetPath));
     }
@@ -55,12 +58,18 @@ readonly class InstallerOptionStore
             qualityTools: $this->stringList($decoded['qualityTools'] ?? []),
             additionalPackages: $this->stringList($decoded['additionalPackages'] ?? $decoded['spatiePackages'] ?? []),
             installPostmark: (bool) ($decoded['installPostmark'] ?? false),
+            // Absent from a state file written before the option existed, and Boost ran
+            // unconditionally then — so its absence has to keep meaning yes.
+            installBoost: (bool) ($decoded['installBoost'] ?? true),
             boostAgents: $this->stringList($decoded['boostAgents'] ?? []),
             boostSkillRepos: $this->stringList($decoded['boostSkillRepos'] ?? []),
             extraPackages: $this->stringList($decoded['extraPackages'] ?? []),
             extraDevPackages: $this->stringList($decoded['extraDevPackages'] ?? []),
             dryRun: $dryRun,
             coreNamespace: isset($decoded['coreNamespace']) ? (string) $decoded['coreNamespace'] : null,
+            // Reaching the store at all means --continue: whatever the previous run left
+            // running — containers, volumes, a partly migrated database — must survive.
+            resume: true,
         );
     }
 

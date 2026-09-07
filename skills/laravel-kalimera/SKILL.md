@@ -50,6 +50,7 @@ Mirror kalimera's own prompts — cover every topic, batched into as few rounds 
 | Spatie packages | none, or per-package picks from the catalog | `additionalPackages` |
 | Core src/ scaffold | yes as `Core`, custom namespace, or skip | `coreNamespace` |
 | Postmark SDK | no / yes | `installPostmark` |
+| Laravel Boost | yes / no — skip it and the two rows below do not apply | `installBoost` |
 | Boost agents | claude_code + cursor + codex, or picks from the 13 | `boostAgents` |
 | Boost skills repos | none, or `owner/repo` list | `boostSkillRepos` |
 | Extra packages | none, or composer names (dev variants too) | `extraPackages`, `extraDevPackages` |
@@ -68,7 +69,15 @@ Kalimera hard-fails on a missing binary or a dead daemon. `--dry-run` downgrades
 
 ### If kalimera is missing
 
-Not on Packagist. Install globally from the local repo — on Labrodev machines it lives at `~/www/laravel-kalimera`; if it is not there, ask the user where the repo is (do not guess, do not try Packagist):
+Install it globally from Packagist:
+
+```bash
+composer global require labrodev/kalimera
+```
+
+Composer's global bin directory (`~/.composer/vendor/bin`, or `~/.config/composer/vendor/bin` on Linux) must be on `PATH` — if `command -v laravel` works, it already is.
+
+Working from a local checkout of kalimera itself (on Labrodev machines it lives at `~/www/laravel-kalimera`; if it is not there, ask the user where the repo is rather than guessing):
 
 ```bash
 # Substitute the ABSOLUTE repo path — composer does not expand ~ inside repository urls
@@ -76,7 +85,7 @@ composer global config repositories.kalimera '{"type": "path", "url": "/absolute
 composer global require labrodev/kalimera:@dev
 ```
 
-Zero-install alternative: run `composer install` once inside the repo, then call `<repo>/bin/kalimera` by full path.
+A path repository is canonical and keeps shadowing Packagist afterwards — undo it with `composer global config --unset repositories.kalimera`. Zero-install alternative: run `composer install` once inside the repo, then call `<repo>/bin/kalimera` by full path.
 
 ## Flags
 
@@ -84,9 +93,10 @@ Zero-install alternative: run `composer install` once inside the repo, then call
 |------|--------|------------|
 | `--defaults` | Skip every prompt and the final confirm | Mandatory in non-TTY shells |
 | `--dry-run` | Print the full command plan, execute nothing | Validates the config; works while Docker is down |
-| `--continue` | Resume a failed run from the app's `.kalimera.json` | Still needs the name and `--defaults` |
+| `--continue` | Resume a failed run from the app's `.kalimera.json`, skipping steps recorded in `.kalimera-steps.json` | Still needs the name and `--defaults` |
 | `--config=path` | Load preselected answers + package catalog from JSON | The only customization mechanism |
 | `--log[=path]` | Append-only transcript | Bare `--log` writes `<app>/kalimera.log` (gitignored) |
+| `--verbose`, `-v` | Stream raw command output instead of a condensed progress line | Rarely worth it — the Sail build alone is tens of thousands of lines. `--log` captures everything either way, and a failed command replays its last 40 lines regardless |
 
 **Rule**: There is no `--no-interaction`, no env vars, no per-prompt flags, no JSON output. Custom setup means a config JSON — nothing else.
 
@@ -122,6 +132,7 @@ All `preselected` keys:
 | `qualityTools` | `pint`, `phpstan`, `rector` | all three |
 | `coreNamespace` | namespace string; `null` skips the src/ scaffold | `"Core"` |
 | `installPostmark` | bool | `false` |
+| `installBoost` | bool — `false` skips the Boost step and the two keys below | `true` |
 | `boostAgents` | `claude_code`, `cursor`, `codex` + 10 more | those three |
 | `boostSkillRepos` | list of `owner/repo` | `[]` |
 | `extraPackages`, `extraDevPackages` | composer package names | `[]` |
@@ -152,8 +163,8 @@ Workflow: write the JSON → rehearse with `kalimera new app --dry-run --default
 # 1. Exit code is the primary signal (binary: 0 success, 1 failure)
 kalimera new my-app --defaults --log || echo "FAILED"
 
-# 2. Completion marker: .kalimera.json is deleted only when the scaffold finished
-test ! -f my-app/.kalimera.json && echo "completed"
+# 2. Completion marker: both resume-state files are deleted only when the scaffold finished
+test ! -f my-app/.kalimera.json && test ! -f my-app/.kalimera-steps.json && echo "completed"
 
 # 3. Containers actually running
 cd my-app && ./vendor/bin/sail ps
@@ -176,8 +187,13 @@ cd ~/www && kalimera new my-app --continue --defaults
 kalimera new --continue
 ```
 
-- `--continue` reuses the answers saved in `<app>/.kalimera.json` (written right after `laravel new`, deleted on success) and re-runs the scaffold; work already done is skipped or safely repeated.
+- `--continue` reuses the answers saved in `<app>/.kalimera.json` and skips every step listed in `<app>/.kalimera-steps.json`, so the run picks up at the step that broke instead of replaying the plan. Both files are written right after `laravel new`, gitignored, and deleted on success.
+- Starting the Sail containers always re-runs, checkpoint or not: the record says they were started once, not that they are up now. Seeing `sail up -d --wait` again on a resume is correct.
+- **Rule**: changing an answer before resuming only reaches steps that have NOT been checkpointed. Editing `.kalimera.json` to drop a package that will not resolve does nothing if its step already completed — delete that step's entry from `.kalimera-steps.json` too. Deleting the whole file replays everything.
+- Fix the cause in `.kalimera.json`, not in the config JSON: a resume reads its answers from the saved state file, and `--config=` no longer applies.
 - `--continue` resumes kalimera's OWN interrupted runs only. No `.kalimera.json` — nothing to resume. Never point kalimera at an arbitrary existing project: "add X to an existing app" is a composer/artisan task, not a kalimera task.
+- Deleted the app directory to start over? `--continue` then has nothing to resume and runs as a plain fresh scaffold, including clearing any Docker project still holding that name. Passing it defensively is safe; it is not a way to re-enter a directory that is gone.
+- A step that re-runs republishes its template. If a published config (`pint.json`, `phpstan.neon.dist`, `rector.php`) was edited while diagnosing the failure, kalimera keeps the edited version as `<file>.bak` and warns — nothing is lost, but the live file is the template again.
 - `Another kalimera run is already working on <path>` — a concurrent run holds the lock; it dies with that process. Wait for it, or kill the other kalimera.
 
 ## The Generated App and AgentGuard
@@ -204,6 +220,8 @@ Working in the app:
 | `port is already allocated` on a later `sail up` | Port probe only sees currently listening sockets | Edit `.env` of the app you are NOT running (`APP_PORT`, `VITE_PORT`, `FORWARD_*_PORT`) |
 | PHPStan exit 1 with zero output | Deleted `src/` still listed in configs | Strip `src` from `phpstan.neon.dist` and `rector.php` |
 | `migrate:fresh` works when it should refuse | AgentGuard not last in providers | Move it last in `bootstrap/providers.php`; verify it refuses again |
+| A resume ignored an answer you changed | That step is already checkpointed | Delete its entry from `<app>/.kalimera-steps.json` as well as fixing `.kalimera.json` |
+| `Docker already has a project named "<app>"` | The directory name was used by an earlier run, or by another live app | Expected on a reused name — it removes those containers/volumes first. If the named resources belong to an app still in use, stop and scaffold under a different name |
 
 The address-pool row is the one that hits an agent scaffolding many apps in sequence.
 

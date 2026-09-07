@@ -36,8 +36,23 @@ it('produces the full default dry-run command sequence', function (): void {
     $exitCode = runFakeInstaller($processRunner, ['new', tempDir().'/demo-app', '--dry-run', '--defaults']);
 
     expect($exitCode)->toBe(0)
-        ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->quietCommands))->toBe([
+        // Questions get asked during a rehearsal — they change nothing, and their answers
+        // are what it reports. Side effects do not: this list staying empty is the promise.
+        ->and($processRunner->quietCommands)->toBe([])
+        // And the promise is only worth something if the plan reached the side effects at
+        // all. These are the two the run asked for and did not get — an empty list above
+        // with an empty list here would just mean the steps never got that far.
+        ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->skippedQuietCommands))->toBe([
+            ['./vendor/bin/sail', 'down', '-v'],
+            ['docker', 'compose', 'exec', '-T', '-u', 'root', 'laravel.test', 'chown', '-R', 'sail', '/home/sail'],
+        ])
+        ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->probeCommands))->toBe([
             ['docker', 'info'],
+            ['docker', 'container', 'inspect', 'demo-app-laravel.test-1'],
+            ['docker', 'container', 'inspect', 'demo-app-pgsql-1'],
+            ['docker', 'container', 'inspect', 'demo-app-redis-1'],
+            ['docker', 'volume', 'inspect', 'demo-app_sail-pgsql'],
+            ['docker', 'volume', 'inspect', 'demo-app_sail-redis'],
         ])
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->commands))->toBe([
             ['laravel', 'new', 'demo-app', '--pest', '--git', '--no-boost', '--no-interaction', '--react'],
@@ -53,6 +68,7 @@ it('produces the full default dry-run command sequence', function (): void {
             ['./vendor/bin/sail', 'composer', 'require', '--dev', 'laravel/pint', 'larastan/larastan', 'barryvdh/laravel-ide-helper', 'rector/rector', 'driftingly/rector-laravel'],
             ['./vendor/bin/sail', 'composer', 'require', 'laravel/boost', '--dev'],
             ['./vendor/bin/sail', 'artisan', 'boost:install', '--guidelines', '--skills', '--mcp', '--no-interaction'],
+            ['./vendor/bin/sail', 'artisan', 'boost:update', '--no-discover', '--no-interaction'],
             ['./vendor/bin/sail', 'composer', 'dump-autoload'],
             ['./vendor/bin/sail', 'artisan', 'migrate', '--no-interaction'],
             ['./vendor/bin/sail', 'npm', 'install'],
@@ -67,6 +83,7 @@ it('produces the full default dry-run command sequence', function (): void {
         ])
         ->and($processRunner->fileActions)->toBe([
             'normalize bootstrap/providers.php to inline class names',
+            'gitignore the .kalimera.json and .kalimera-steps.json resume state',
             'save the chosen answers to .kalimera.json so --continue can reuse them',
             'remove the sqlite database left over from `laravel new`',
             'sync the DB_* block from .env to .env.example',
@@ -114,6 +131,33 @@ it('honours a config file for defaults and the additional-packages catalog', fun
         ->and($commands)->toContain(['./vendor/bin/sail', 'composer', 'require', 'spatie/laravel-medialibrary'])
         ->and($commands)->toContain(['./vendor/bin/sail', 'composer', 'require', '--dev', 'barryvdh/laravel-debugbar'])
         ->and($commands)->toContain(['./vendor/bin/sail', 'artisan', 'vendor:publish', '--provider=Spatie\\MediaLibrary\\MediaLibraryServiceProvider', '--no-interaction']);
+});
+
+// Boost was the one heavy step with no way to decline it, which left no lean plan for the
+// nightly resume job to exercise the checkpoint machinery against — and no answer at all
+// for anyone scaffolding without AI agents.
+it('leaves Laravel Boost out of the plan entirely when it is declined', function (): void {
+    $configPath = tempDir().'/kalimera.config.json';
+    file_put_contents($configPath, json_encode([
+        'preselected' => ['installBoost' => false],
+    ], JSON_THROW_ON_ERROR));
+
+    $processRunner = new FakeProcessRunner(dryRun: true);
+
+    $exitCode = runFakeInstaller($processRunner, ['new', tempDir().'/demo-app', '--dry-run', '--defaults', '--config='.$configPath]);
+
+    $printable = implode(' ', array_map(fn (array $entry): string => implode(' ', $entry['command']), $processRunner->commands));
+
+    expect($exitCode)->toBe(0)
+        // Not a bare 'boost' match: `laravel new` always passes --no-boost, since kalimera
+        // installs Boost itself rather than letting the installer do it.
+        ->and($printable)->not->toContain('require laravel/boost')
+        ->and($printable)->not->toContain('boost:install')
+        ->and($printable)->not->toContain('boost:update')
+        ->and($processRunner->fileActions)->not->toContain('preconfigure boost.json with agents: claude_code, cursor, codex')
+        // The rest of the plan is untouched — this declines a step, it does not trim the run.
+        ->and($printable)->toContain('artisan sail:install')
+        ->and($printable)->toContain('git commit');
 });
 
 it('fails with a clear error for an invalid config file', function (): void {
