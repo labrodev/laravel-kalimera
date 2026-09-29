@@ -28,6 +28,20 @@ it('passes an absolute path through untouched', function (): void {
     expect(new TargetResolver(cwd: $cwd)->resolve('/apps/demo'))->toBe(['demo', '/apps/demo']);
 });
 
+// Everything keyed on the path — the run lock above all — must see one application
+// however the user spelled its location.
+it('resolves every spelling of the same location to one canonical path', function (): void {
+    $cwd = tempDir();
+    mkdir($cwd.'/www');
+    symlink($cwd.'/www', $cwd.'/alias');
+
+    $resolver = new TargetResolver(cwd: $cwd);
+
+    expect($resolver->resolve('./www/my-app'))->toBe(['my-app', $cwd.'/www/my-app'])
+        ->and($resolver->resolve('alias/my-app'))->toBe(['my-app', $cwd.'/www/my-app'])
+        ->and($resolver->resolve('www/../www/my-app'))->toBe(['my-app', $cwd.'/www/my-app']);
+});
+
 it('trims a trailing slash', function (): void {
     $cwd = tempDir();
 

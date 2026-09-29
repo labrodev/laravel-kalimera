@@ -58,7 +58,7 @@ it('overrides the preselected answers from the config file', function (): void {
         ->and($installerConfig->installPostmark)->toBeTrue()
         ->and($installerConfig->coreNamespace)->toBeNull()
         ->and($installerConfig->boostSkillRepos)->toBe(['labrodev/skills'])
-        ->and($installerConfig->qualityTools)->toBe(['pint', 'phpstan', 'rector'])
+        ->and($installerConfig->qualityTools)->toBe(['pint', 'phpstan', 'rector', 'vet'])
         ->and($installerConfig->additionalPackages)->toEqual((new ConfigLoader)(configPath: null)->additionalPackages);
 });
 

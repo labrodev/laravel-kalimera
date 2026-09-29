@@ -4,13 +4,11 @@ declare(strict_types=1);
 
 namespace Kalimera\Services;
 
-use JsonException;
+use Kalimera\Exceptions\InvalidTargetException;
 use Kalimera\Payloads\InstallerOption;
 
 readonly class InstallerOptionStore
 {
-    private const string FILENAME = '.kalimera.json';
-
     public function save(InstallerOption $installerOption): void
     {
         if (! is_dir($installerOption->targetPath)) {
@@ -23,28 +21,37 @@ readonly class InstallerOptionStore
         // them from the current run — persisting them would only mislead a reader.
         unset($answers['dryRun'], $answers['resume']);
 
-        $encoded = json_encode($answers, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-
-        (new FileWriter)(contents: $encoded."\n", path: $this->path($installerOption->targetPath));
+        new RunStateFile($installerOption->targetPath)->saveAnswers($answers);
     }
 
+    /**
+     * Null when there is nothing to resume from: the previous run died before it saved its
+     * answers, so no step past creating the application ran either, and asking again
+     * cannot contradict anything.
+     *
+     * Once there is state on disk, though, the answers are not optional. A plan rebuilt
+     * from fresh answers would still skip every step the checkpoint names — steps that ran
+     * under the old ones — and finish an application that is half one configuration and
+     * half the other, with nothing to say so.
+     *
+     * @throws InvalidTargetException when state exists but its answers cannot be read
+     */
     public function load(string $appName, bool $dryRun, string $targetPath): ?InstallerOption
     {
-        $path = $this->path($targetPath);
+        $runStateFile = new RunStateFile($targetPath);
 
-        if (! file_exists($path)) {
+        if (! $runStateFile->exists()) {
             return null;
         }
 
-        try {
-            /** @var array<string, mixed> $decoded */
-            $decoded = json_decode(associative: true, flags: JSON_THROW_ON_ERROR, json: (string) file_get_contents($path));
-        } catch (JsonException) {
-            return null;
-        }
+        $decoded = $runStateFile->answers();
 
-        if (! isset($decoded['starterKit'], $decoded['phpConstraint'])) {
-            return null;
+        if ($decoded === null || ! isset($decoded['starterKit'], $decoded['phpConstraint'])) {
+            throw InvalidTargetException::make(sprintf(
+                'Cannot resume %s: %s is there but the answers it should hold are missing or unreadable, and the steps already run used them. Restore the file, or delete the directory and start over.',
+                $targetPath,
+                RunStateFile::FILENAME,
+            ));
         }
 
         return new InstallerOption(
@@ -71,20 +78,6 @@ readonly class InstallerOptionStore
             // running — containers, volumes, a partly migrated database — must survive.
             resume: true,
         );
-    }
-
-    public function forget(string $targetPath): void
-    {
-        $path = $this->path($targetPath);
-
-        if (file_exists($path)) {
-            unlink($path);
-        }
-    }
-
-    private function path(string $targetPath): string
-    {
-        return $targetPath.'/'.self::FILENAME;
     }
 
     /**

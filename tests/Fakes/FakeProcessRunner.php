@@ -10,7 +10,7 @@ use Kalimera\Exceptions\CommandFailedException;
 
 class FakeProcessRunner implements ProcessRunner
 {
-    /** @var list<array{command: list<string>, cwd: string|null}> */
+    /** @var list<array{command: list<string>, cwd: string|null, replayTail: bool}> */
     public array $commands = [];
 
     /** @var list<string> */
@@ -79,11 +79,11 @@ class FakeProcessRunner implements ProcessRunner
         return $this->dryRun;
     }
 
-    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1): void
+    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1, bool $replayTail = true): void
     {
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             try {
-                $this->runCommandOnce(command: $command, cwd: $cwd);
+                $this->runCommandOnce(command: $command, cwd: $cwd, replayTail: $replayTail);
 
                 return;
             } catch (CommandFailedException $commandFailedException) {
@@ -97,9 +97,9 @@ class FakeProcessRunner implements ProcessRunner
     /**
      * @param  list<string>  $command
      */
-    private function runCommandOnce(array $command, ?string $cwd = null): void
+    private function runCommandOnce(array $command, ?string $cwd = null, bool $replayTail = true): void
     {
-        $this->commands[] = ['command' => $command, 'cwd' => $cwd];
+        $this->commands[] = ['command' => $command, 'cwd' => $cwd, 'replayTail' => $replayTail];
 
         $printable = implode(' ', $command);
 

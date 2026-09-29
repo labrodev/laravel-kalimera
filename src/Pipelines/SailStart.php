@@ -5,10 +5,15 @@ declare(strict_types=1);
 namespace Kalimera\Pipelines;
 
 use Kalimera\Contracts\Pipeline;
+use Kalimera\Contracts\PortChecker;
 use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Exceptions\CommandFailedException;
+use Kalimera\Exceptions\PortInUseException;
 use Kalimera\Payloads\InstallerOption;
+use Kalimera\Services\ComposeProjectName;
+use Kalimera\Services\EnvFileWriter;
 use Kalimera\Services\SailCommandBuilder;
+use Kalimera\Services\SailPortMap;
 
 use function Laravel\Prompts\warning;
 
@@ -18,6 +23,7 @@ readonly class SailStart implements Pipeline
         private InstallerOption $installerOption,
         private ProcessRunner $processRunner,
         private SailCommandBuilder $sailCommandBuilder,
+        private PortChecker $portChecker,
     ) {}
 
     public function label(): string
@@ -27,15 +33,18 @@ readonly class SailStart implements Pipeline
 
     public function execute(): void
     {
+        $this->pinProjectName();
+
         if (! $this->installerOption->resume) {
             $this->discardPreviousProject();
         }
 
         try {
             $this->up();
-        } catch (CommandFailedException) {
+        } catch (CommandFailedException $commandFailedException) {
             warning('Sail could not start — removing leftover containers from a previous run and retrying.');
             $this->removeLeftovers();
+            $this->refuseBusyPorts($commandFailedException);
             $this->up();
         }
 
@@ -45,18 +54,35 @@ readonly class SailStart implements Pipeline
     }
 
     /**
-     * Compose derives its project name from the directory, so an app scaffolded under a
-     * name that was used before inherits that run's containers and volumes — including a
-     * half-migrated database, which later fails `migrate` with duplicate-relation errors
-     * that look nothing like the stale data behind them. A --continue run keeps everything.
+     * Pinned before anything asks docker about the project, so the name every probe,
+     * cleanup and `sail` command uses is the one compose will file the containers under.
+     * Only on a fresh run: a resumed one keeps whatever name its containers already have.
+     */
+    private function pinProjectName(): void
+    {
+        $composeProjectName = new ComposeProjectName($this->installerOption->targetPath);
+
+        if ($this->installerOption->resume || $composeProjectName->configured() !== null) {
+            return;
+        }
+
+        $name = $composeProjectName->unique();
+
+        $this->processRunner->applyFileChange(
+            action: fn () => new EnvFileWriter($this->installerOption->targetPath.'/.env')(key: ComposeProjectName::ENV_KEY, value: $name),
+            description: sprintf('set %s=%s in .env so no other application shares its containers', ComposeProjectName::ENV_KEY, $name),
+        );
+    }
+
+    /**
+     * The project name is unique to this path, so anything already answering to it was
+     * left by an earlier run in this very directory — one the user deleted and started
+     * over. Inheriting it would bring a half-migrated database along, which later fails
+     * `migrate` with duplicate-relation errors that look nothing like the stale data behind
+     * them, so it goes. A --continue run keeps everything.
      *
-     * What gets inherited is not necessarily abandoned, though. This directory was created
-     * moments ago, so anything already answering to its project name belongs to something
-     * else: an earlier run under the same name, or an application still in use in another
-     * directory that happens to share it. `down -v` takes that one's database with it.
-     * So the removal is announced with the resources it is about to destroy, and skipped
-     * outright when there is nothing to inherit — which is the overwhelmingly common case,
-     * and the one where a blind `down -v` bought nothing for its risk.
+     * The removal is still announced with the resources it destroys, and skipped outright
+     * when there is nothing to inherit — the overwhelmingly common case.
      *
      * Deliberately without --remove-orphans: that would also remove containers absent
      * from this compose file but carrying the project label, which are by definition not
@@ -71,7 +97,7 @@ readonly class SailStart implements Pipeline
         }
 
         warning(sprintf(
-            'Docker already has a project named "%s" — from an earlier run under this name, or from another application sharing it. Removing it, and its data, before starting: %s.',
+            'Docker already has a project named "%s" — left by an earlier run in this directory. Removing it, and its data, before starting: %s.',
             $this->projectName(),
             implode(', ', $inherited),
         ));
@@ -157,12 +183,27 @@ readonly class SailStart implements Pipeline
         );
     }
 
+    /**
+     * With the leftovers gone, a port that is still taken is held by something that is not
+     * this application — and a third `up` would fail on it exactly like the first two,
+     * under an error that talks about containers. Name the port instead.
+     */
+    private function refuseBusyPorts(CommandFailedException $commandFailedException): void
+    {
+        if ($this->processRunner->isDryRun()) {
+            return;
+        }
+
+        $ports = new SailPortMap($this->installerOption->sailServices)->effective($this->installerOption->targetPath.'/.env');
+        $busy = array_filter($ports, $this->portChecker->isBusy(...));
+
+        if ($busy !== []) {
+            throw PortInUseException::make($busy, $commandFailedException);
+        }
+    }
+
     private function projectName(): string
     {
-        return strtolower((string) preg_replace(
-            pattern: '/[^a-zA-Z0-9_-]/',
-            replacement: '',
-            subject: basename($this->installerOption->targetPath),
-        ));
+        return new ComposeProjectName($this->installerOption->targetPath)->resolve($this->installerOption->resume);
     }
 }

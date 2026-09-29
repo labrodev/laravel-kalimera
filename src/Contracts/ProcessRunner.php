@@ -19,8 +19,13 @@ interface ProcessRunner
 
     /**
      * @param  list<string>  $command
+     * @param  bool  $replayTail  Whether a failure may put the tail of the output on the
+     *                            terminal. A caller that expects the command to fail — a
+     *                            probe whose non-zero exit is the answer, or one wrapping
+     *                            its own retry loop — passes false so a failure it has
+     *                            already planned for does not read as a broken run.
      */
-    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1): void;
+    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1, bool $replayTail = true): void;
 
     /**
      * Ask the environment a question — is Docker answering, does this file parse. Runs

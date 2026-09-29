@@ -23,7 +23,7 @@
                 },
                 "qualityTools": {
                     "items": {
-                        "enum": ["pint", "phpstan", "rector"]
+                        "enum": ["pint", "phpstan", "rector", "vet"]
                     }
                 },
                 "boostAgents": {
@@ -38,7 +38,7 @@
                 "aroundPackages": ["horizon", "fortify", "ai", "nightwatch"],
                 "sailServices": ["pgsql", "redis"],
                 "phpConstraint": "^8.5",
-                "qualityTools": ["pint", "phpstan", "rector"],
+                "qualityTools": ["pint", "phpstan", "rector", "vet"],
                 "installPostmark": false,
                 "installBoost": true,
                 "coreNamespace": "Core",

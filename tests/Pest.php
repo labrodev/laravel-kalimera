@@ -2,7 +2,14 @@
 
 declare(strict_types=1);
 
+use Kalimera\Contracts\Pipeline;
+use Kalimera\InstallPlan;
+use Kalimera\KalimeraInstaller;
+use Kalimera\Payloads\InstallerConfig;
 use Kalimera\Payloads\InstallerOption;
+use Kalimera\Tests\Fakes\FakeExecutableFinder;
+use Kalimera\Tests\Fakes\FakePortChecker;
+use Kalimera\Tests\Fakes\FakeProcessRunner;
 use Laravel\Prompts\Output\BufferedConsoleOutput;
 use Laravel\Prompts\Prompt;
 use Symfony\Component\Console\Output\ConsoleOutput;
@@ -13,7 +20,9 @@ function tempDir(): string
 
     mkdir(directory: $path, permissions: 0755, recursive: true);
 
-    return $path;
+    // Canonical, as TargetResolver makes every target: the system temp directory is itself
+    // a symlink on macOS (/var → /private/var).
+    return (string) realpath($path);
 }
 
 function removeDir(string $path): void
@@ -28,7 +37,7 @@ function removeDir(string $path): void
     );
 
     foreach ($items as $item) {
-        $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+        $item->isDir() && ! $item->isLink() ? rmdir($item->getPathname()) : unlink($item->getPathname());
     }
 
     rmdir($path);
@@ -47,7 +56,7 @@ function makeInstallerOption(array $overrides = []): InstallerOption
         'aroundPackages' => ['horizon', 'fortify', 'ai', 'nightwatch'],
         'sailServices' => ['pgsql', 'redis'],
         'phpConstraint' => '^8.5',
-        'qualityTools' => ['pint', 'phpstan', 'rector'],
+        'qualityTools' => ['pint', 'phpstan', 'rector', 'vet'],
         'additionalPackages' => [],
         'installPostmark' => false,
         'installBoost' => true,
@@ -96,3 +105,82 @@ uses()
         removeDir(sys_get_temp_dir().'/kalimera-tests');
     })
     ->in('Unit', 'Feature', 'Arch');
+
+/**
+ * Stands in for what `laravel new` leaves behind — just enough of a skeleton for the
+ * steps that read the application to find what they expect.
+ */
+function scaffoldFakeApp(string $targetPath): void
+{
+    mkdir(directory: $targetPath.'/bootstrap', permissions: 0755, recursive: true);
+    mkdir(directory: $targetPath.'/database', permissions: 0755, recursive: true);
+
+    file_put_contents($targetPath.'/artisan', "<?php\n");
+    file_put_contents($targetPath.'/.env', "APP_NAME=Laravel\nDB_CONNECTION=pgsql\nDB_HOST=pgsql\nDB_PORT=5432\n");
+    file_put_contents($targetPath.'/.env.example', "APP_NAME=Laravel\n");
+    file_put_contents($targetPath.'/bootstrap/providers.php', "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n");
+    file_put_contents($targetPath.'/composer.json', json_encode([
+        'require' => ['php' => '^8.4', 'laravel/framework' => '^13.0'],
+        'require-dev' => ['laravel/sail' => '^1.0'],
+        'autoload' => ['psr-4' => ['App\\' => 'app/']],
+        'scripts' => [],
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+}
+
+/**
+ * Runs the installer with every collaborator faked. The scoped error handler mutes
+ * the @-suppressed warnings (missing .env probes) that Pest would otherwise report.
+ *
+ * @param  list<string>  $argv
+ */
+function runFakeInstaller(FakeProcessRunner $processRunner, array $argv): int
+{
+    $kalimeraInstaller = new KalimeraInstaller(
+        executableFinder: new FakeExecutableFinder,
+        portChecker: new FakePortChecker,
+        processRunner: $processRunner,
+    );
+
+    set_error_handler(fn (): bool => true);
+
+    try {
+        return $kalimeraInstaller->execute($argv);
+    } finally {
+        restore_error_handler();
+    }
+}
+
+/**
+ * Every option that adds a step, against a fake application on disk. Pass the path of an
+ * earlier call to get the same application back, e.g. as the --continue that follows it.
+ */
+function everythingSelected(?string $targetPath = null, bool $resume = false): InstallerOption
+{
+    if ($targetPath === null) {
+        $targetPath = tempDir().'/demo-app';
+        scaffoldFakeApp($targetPath);
+    }
+
+    return makeInstallerOption([
+        'resume' => $resume,
+        'targetPath' => $targetPath,
+        'starterKit' => 'none',
+        'installInertia' => true,
+        'installPostmark' => true,
+        'additionalPackages' => ['spatie/laravel-data'],
+        'extraPackages' => ['acme/runtime'],
+        'extraDevPackages' => ['acme/dev-tool'],
+    ]);
+}
+
+/**
+ * @return list<Pipeline>
+ */
+function fullPlan(InstallerOption $installerOption, FakeProcessRunner $processRunner): array
+{
+    return new InstallPlan(new FakePortChecker)->steps(
+        installerConfig: InstallerConfig::builtIn(),
+        installerOption: $installerOption,
+        processRunner: $processRunner,
+    );
+}

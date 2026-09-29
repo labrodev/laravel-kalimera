@@ -12,7 +12,23 @@ class TranscriptLogger
      */
     private string $pending = '';
 
+    /**
+     * Held open for the whole run. Child output arrives in thousands of small chunks — a
+     * Sail image build alone is tens of thousands — and reopening, locking and closing
+     * the file for each one cost more than the write itself. The lock is gone with it:
+     * the run lock already keeps a second kalimera off this application, and with it off
+     * this transcript.
+     *
+     * @var resource|null
+     */
+    private $handle;
+
     public function __construct(private ?string $path = null) {}
+
+    public function __destruct()
+    {
+        $this->close();
+    }
 
     /**
      * Point the transcript at a file. Everything buffered so far is written as soon as
@@ -20,6 +36,7 @@ class TranscriptLogger
      */
     public function useFile(string $path): void
     {
+        $this->close();
         $this->path = $path;
 
         $this->flush();
@@ -112,12 +129,50 @@ class TranscriptLogger
 
     private function flush(): void
     {
-        if ($this->pending === '' || $this->path === null || ! is_dir(dirname($this->path))) {
+        if ($this->pending === '') {
             return;
         }
 
-        file_put_contents(data: $this->pending, filename: $this->path, flags: FILE_APPEND | LOCK_EX);
+        $handle = $this->handle ?? $this->open();
 
-        $this->pending = '';
+        if ($handle === null) {
+            return;
+        }
+
+        // Unbuffered on purpose: a run that is killed — which is when the transcript gets
+        // read — must not take its last lines down with it.
+        if (fwrite($handle, $this->pending) !== false) {
+            $this->pending = '';
+        }
+    }
+
+    /**
+     * @return resource|null
+     */
+    private function open()
+    {
+        // Until the directory exists — `laravel new` creates it a few steps in — the
+        // lines stay buffered, and the check is repeated only while nothing is open.
+        if ($this->path === null || ! is_dir(dirname($this->path))) {
+            return null;
+        }
+
+        $handle = fopen($this->path, 'a');
+
+        if ($handle === false) {
+            return null;
+        }
+
+        stream_set_write_buffer($handle, 0);
+
+        return $this->handle = $handle;
+    }
+
+    private function close(): void
+    {
+        if ($this->handle !== null) {
+            fclose($this->handle);
+            $this->handle = null;
+        }
     }
 }

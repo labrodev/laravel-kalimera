@@ -58,7 +58,7 @@ it('skips laravel new and normalizes the providers file when the app already exi
     expect($processRunner->commands)->toBe([])
         ->and($processRunner->fileActions)->toBe([
             'normalize bootstrap/providers.php to inline class names',
-            'gitignore the .kalimera.json and .kalimera-steps.json resume state',
+            'gitignore the .kalimera.json resume state',
             'save the chosen answers to .kalimera.json so --continue can reuse them',
         ])
         ->and(file_get_contents($installerOption->targetPath.'/bootstrap/providers.php'))->toBe(
@@ -84,7 +84,7 @@ it('gitignores the transcript inside the created application', function (): void
 
     expect($processRunner->fileActions)->toContain('gitignore the kalimera.log transcript')
         ->and(file_get_contents($installerOption->targetPath.'/.gitignore'))
-        ->toBe("/vendor\n/kalimera.log\n/.kalimera.json\n/.kalimera-steps.json\n");
+        ->toBe("/vendor\n/kalimera.log\n/.kalimera.json\n");
 });
 
 it('gitignores the resume state even when no transcript is written', function (): void {
@@ -98,5 +98,5 @@ it('gitignores the resume state even when no transcript is written', function ()
 
     expect($processRunner->fileActions)->not->toContain('gitignore the kalimera.log transcript')
         ->and(file_get_contents($installerOption->targetPath.'/.gitignore'))
-        ->toBe("/vendor\n/.kalimera.json\n/.kalimera-steps.json\n");
+        ->toBe("/vendor\n/.kalimera.json\n");
 });

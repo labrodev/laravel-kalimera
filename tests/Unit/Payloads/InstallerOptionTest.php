@@ -44,3 +44,12 @@ it('wants an additional package only when it was selected', function (): void {
     expect($installerOption->wantsAdditionalPackage('spatie/laravel-data'))->toBeTrue()
         ->and($installerOption->wantsAdditionalPackage('spatie/laravel-permission'))->toBeFalse();
 });
+
+// Vet is chosen at the quality-tools prompt but installed by its own step at the end of
+// the plan, so a run that wants nothing else must not schedule QualityToolsInstall — its
+// `composer require --dev` would have no packages to name.
+it('does not count vet as static analysis', function (): void {
+    expect(makeInstallerOption(['qualityTools' => ['vet']])->wantsStaticAnalysis())->toBeFalse()
+        ->and(makeInstallerOption(['qualityTools' => ['pint', 'vet']])->wantsStaticAnalysis())->toBeTrue()
+        ->and(makeInstallerOption(['qualityTools' => []])->wantsStaticAnalysis())->toBeFalse();
+});

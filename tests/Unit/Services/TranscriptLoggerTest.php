@@ -122,3 +122,31 @@ it('keeps buffering while the destination directory is missing and flushes once 
         ->and($contents)->toContain('Step 1/2 — Creating the Laravel application')
         ->and($contents)->toContain('Step 2/2 — Installing Laravel Sail');
 });
+
+// The file is held open for the run, so a line has to reach the disk when it is written
+// rather than when the logger is destroyed — a killed run is the one whose transcript
+// gets read.
+it('puts every line on disk as it arrives while the file stays open', function (): void {
+    $path = tempDir().'/kalimera.log';
+    $transcriptLogger = new TranscriptLogger($path);
+
+    $transcriptLogger->output("first chunk\n");
+
+    expect(file_get_contents($path))->toBe("first chunk\n");
+
+    $transcriptLogger->output("second chunk\n");
+
+    expect(file_get_contents($path))->toBe("first chunk\nsecond chunk\n");
+});
+
+it('moves to the new file when the destination changes mid-run', function (): void {
+    $directory = tempDir();
+    $transcriptLogger = new TranscriptLogger($directory.'/first.log');
+
+    $transcriptLogger->output("before\n");
+    $transcriptLogger->useFile($directory.'/second.log');
+    $transcriptLogger->output("after\n");
+
+    expect(file_get_contents($directory.'/first.log'))->toBe("before\n")
+        ->and(file_get_contents($directory.'/second.log'))->toBe("after\n");
+});

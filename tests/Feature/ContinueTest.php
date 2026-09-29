@@ -5,27 +5,6 @@ declare(strict_types=1);
 use Kalimera\Tests\Fakes\FakeProcessRunner;
 
 /**
- * Stands in for what `laravel new` leaves behind — just enough of a skeleton for the
- * steps that read the application to find what they expect.
- */
-function scaffoldFakeApp(string $targetPath): void
-{
-    mkdir(directory: $targetPath.'/bootstrap', permissions: 0755, recursive: true);
-    mkdir(directory: $targetPath.'/database', permissions: 0755, recursive: true);
-
-    file_put_contents($targetPath.'/artisan', "<?php\n");
-    file_put_contents($targetPath.'/.env', "APP_NAME=Laravel\nDB_CONNECTION=pgsql\nDB_HOST=pgsql\nDB_PORT=5432\n");
-    file_put_contents($targetPath.'/.env.example', "APP_NAME=Laravel\n");
-    file_put_contents($targetPath.'/bootstrap/providers.php', "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n");
-    file_put_contents($targetPath.'/composer.json', json_encode([
-        'require' => ['php' => '^8.4', 'laravel/framework' => '^13.0'],
-        'require-dev' => ['laravel/sail' => '^1.0'],
-        'autoload' => ['psr-4' => ['App\\' => 'app/']],
-        'scripts' => [],
-    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
-}
-
-/**
  * A run that dies partway through, leaving the checkpoint and the saved answers behind.
  */
 function runUntilItFails(string $targetPath, string $failOn): FakeProcessRunner
@@ -44,7 +23,7 @@ it('records the steps that finished and drops the record once the scaffold compl
 
     runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
 
-    $recorded = json_decode((string) file_get_contents($targetPath.'/.kalimera-steps.json'), true);
+    $recorded = json_decode((string) file_get_contents($targetPath.'/.kalimera.json'), true)['completedSteps'];
 
     expect($recorded)->toBe([
         'AppCreate',
@@ -60,7 +39,6 @@ it('records the steps that finished and drops the record once the scaffold compl
     $resumed = new FakeProcessRunner;
 
     expect(runFakeInstaller($resumed, ['new', $targetPath, '--defaults', '--continue']))->toBe(0)
-        ->and(file_exists($targetPath.'/.kalimera-steps.json'))->toBeFalse()
         ->and(file_exists($targetPath.'/.kalimera.json'))->toBeFalse();
 });
 
@@ -94,11 +72,13 @@ it('picks up at the step that failed and runs the rest of the plan', function ()
         './vendor/bin/sail artisan boost:install --guidelines --skills --mcp --no-interaction',
         './vendor/bin/sail artisan boost:update --no-discover --no-interaction',
         './vendor/bin/sail composer dump-autoload',
+        './vendor/bin/sail composer require laravel/vet --dev',
+        './vendor/bin/sail php vendor/bin/vet --init --no-interaction',
         './vendor/bin/sail artisan migrate --no-interaction',
         './vendor/bin/sail npm install',
         './vendor/bin/sail composer ide-helper',
-        './vendor/bin/sail composer rector:fix',
-        './vendor/bin/sail composer rector:fix',
+        './vendor/bin/sail php vendor/bin/rector process --clear-cache',
+        './vendor/bin/sail php vendor/bin/rector process --clear-cache',
         './vendor/bin/sail composer pint:fix',
         './vendor/bin/sail composer phpstan',
         './vendor/bin/sail composer quality',
@@ -152,7 +132,22 @@ it('keeps the resume state out of the initial commit', function (): void {
 
     runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
 
-    expect(file_get_contents($targetPath.'/.gitignore'))
-        ->toContain('/.kalimera.json')
-        ->toContain('/.kalimera-steps.json');
+    expect(file_get_contents($targetPath.'/.gitignore'))->toContain('/.kalimera.json');
+});
+
+it('refuses to resume when the saved answers were lost', function (): void {
+    $targetPath = tempDir().'/demo-app';
+
+    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+
+    $state = json_decode((string) file_get_contents($targetPath.'/.kalimera.json'), true);
+    unset($state['answers']);
+    file_put_contents($targetPath.'/.kalimera.json', json_encode($state));
+
+    $resumed = new FakeProcessRunner;
+
+    // --defaults would otherwise rebuild the plan from whatever the config says today and
+    // skip the steps that ran under the answers that were lost.
+    expect(runFakeInstaller($resumed, ['new', $targetPath, '--defaults', '--continue']))->toBe(1)
+        ->and($resumed->commandLines())->toBe([]);
 });

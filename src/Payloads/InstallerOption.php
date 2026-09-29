@@ -59,6 +59,17 @@ readonly class InstallerOption
         return in_array($tool, $this->qualityTools, true);
     }
 
+    /**
+     * The quality tools the QualityToolsInstall step installs. Vet is chosen at the same
+     * prompt but is not one of them: it brings a composer plugin that audits every later
+     * install, so it has a step of its own at the end of the plan — after every other
+     * package is in vendor/, which is exactly what its trust file has to describe.
+     */
+    public function wantsStaticAnalysis(): bool
+    {
+        return array_intersect(['pint', 'phpstan', 'rector'], $this->qualityTools) !== [];
+    }
+
     public function wantsAdditionalPackage(string $package): bool
     {
         return in_array($package, $this->additionalPackages, true);

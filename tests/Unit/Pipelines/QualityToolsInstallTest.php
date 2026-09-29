@@ -70,7 +70,7 @@ it('keeps the src paths in the published configs when the core structure is scaf
         ->and((string) file_get_contents($installerOption->targetPath.'/rector.php'))->toContain("        __DIR__.'/src',\n");
 });
 
-it('replaces the skeleton phpstan config with the template and baseline', function (): void {
+it('replaces the skeleton phpstan config with the template and ships no baseline', function (): void {
     $installerOption = makeInstallerOption(['qualityTools' => ['phpstan']]);
     $processRunner = new FakeProcessRunner;
     $step = makeQualityToolsInstall($installerOption, $processRunner);
@@ -84,7 +84,9 @@ it('replaces the skeleton phpstan config with the template and baseline', functi
     expect(file_exists($installerOption->targetPath.'/phpstan.neon'))->toBeFalse()
         ->and(file_exists($installerOption->targetPath.'/phpstan.neon.bak'))->toBeFalse()
         ->and(file_exists($installerOption->targetPath.'/phpstan.neon.dist'))->toBeTrue()
-        ->and(file_exists($installerOption->targetPath.'/phpstan-baseline.neon'))->toBeTrue();
+        // The published stubs are repaired in AppFinalize instead, so a scaffold has
+        // nothing to concede and starts with no baseline file at all.
+        ->and(file_exists($installerOption->targetPath.'/phpstan-baseline.neon'))->toBeFalse();
 });
 
 // A replay reaches this step over a phpstan.neon that the user may well have written while

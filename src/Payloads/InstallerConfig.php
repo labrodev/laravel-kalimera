@@ -81,7 +81,7 @@ readonly class InstallerConfig
             aroundPackages: ['horizon', 'fortify', 'ai', 'nightwatch'],
             sailServices: ['pgsql', 'redis'],
             phpConstraint: '^8.5',
-            qualityTools: ['pint', 'phpstan', 'rector'],
+            qualityTools: ['pint', 'phpstan', 'rector', 'vet'],
             installPostmark: false,
             installBoost: true,
             boostAgents: ['claude_code'],

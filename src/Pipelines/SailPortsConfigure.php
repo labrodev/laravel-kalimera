@@ -10,22 +10,12 @@ use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Services\EnvFileWriter;
 use Kalimera\Services\NetworkPortChecker;
+use Kalimera\Services\SailPortMap;
 
 use function Laravel\Prompts\info;
 
 class SailPortsConfigure implements Pipeline
 {
-    private const array APP_PORTS = [['APP_PORT', 80], ['VITE_PORT', 5173]];
-
-    private const array SERVICE_PORTS = [
-        'mysql' => [['FORWARD_DB_PORT', 3306]],
-        'pgsql' => [['FORWARD_DB_PORT', 5432]],
-        'redis' => [['FORWARD_REDIS_PORT', 6379]],
-        'mailpit' => [['FORWARD_MAILPIT_PORT', 1025], ['FORWARD_MAILPIT_DASHBOARD_PORT', 8025]],
-        'meilisearch' => [['FORWARD_MEILISEARCH_PORT', 7700]],
-        'minio' => [['FORWARD_MINIO_PORT', 9000], ['FORWARD_MINIO_CONSOLE_PORT', 8900]],
-    ];
-
     /** @var list<int> */
     private array $claimed = [];
 
@@ -45,7 +35,7 @@ class SailPortsConfigure implements Pipeline
         $overrides = [];
         $alreadyConfigured = $this->configuredPortKeys();
 
-        foreach ($this->portMap() as [$key, $default]) {
+        foreach ($this->portMap()->defaults() as [$key, $default]) {
             if (isset($overrides[$key])) {
                 continue;
             }
@@ -87,29 +77,12 @@ class SailPortsConfigure implements Pipeline
      */
     private function configuredPortKeys(): array
     {
-        $environment = @file_get_contents($this->installerOption->targetPath.'/.env');
-
-        if ($environment === false) {
-            return [];
-        }
-
-        preg_match_all(matches: $matches, pattern: '/^((?:APP_PORT|VITE_PORT|FORWARD_[A-Z_]+_PORT))=/m', subject: $environment);
-
-        return $matches[1];
+        return array_keys($this->portMap()->configured($this->installerOption->targetPath.'/.env'));
     }
 
-    /**
-     * @return list<array{0: string, 1: int}>
-     */
-    private function portMap(): array
+    private function portMap(): SailPortMap
     {
-        $map = self::APP_PORTS;
-
-        foreach ($this->installerOption->sailServices as $service) {
-            $map = [...$map, ...self::SERVICE_PORTS[$service] ?? []];
-        }
-
-        return $map;
+        return new SailPortMap($this->installerOption->sailServices);
     }
 
     private function available(int $port): bool

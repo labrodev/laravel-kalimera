@@ -44,6 +44,7 @@ readonly class OptionCollector
         'pint' => 'Pint — code style (pint.json)',
         'phpstan' => 'PHPStan + Larastan — static analysis (phpstan.neon.dist)',
         'rector' => 'Rector + rector-laravel — automated refactoring (rector.php)',
+        'vet' => 'Vet — dependency audit, trusted versions recorded in vet.json',
     ];
 
     public const array BOOST_AGENTS = [
@@ -172,7 +173,7 @@ readonly class OptionCollector
 
         $qualityTools = $this->stringList(multiselect(
             default: $installerConfig->qualityTools,
-            label: 'Which static analysis / code quality tools should be set up?',
+            label: 'Which code quality and dependency audit tools should be set up?',
             options: self::QUALITY_TOOLS,
         ));
 

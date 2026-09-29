@@ -53,8 +53,17 @@ readonly class TargetResolver
         return $value;
     }
 
+    /**
+     * Canonical wherever the parent exists: `app`, `./app` and the same directory reached
+     * through a symlink are one application, and everything keyed on the path — the run
+     * lock above all — has to see them as one. The application itself usually does not
+     * exist yet, so only its parent can be resolved.
+     */
     private function absolutePath(string $path): string
     {
-        return str_starts_with($path, '/') ? $path : ($this->cwd ?? (string) getcwd()).'/'.$path;
+        $absolute = str_starts_with($path, '/') ? $path : ($this->cwd ?? (string) getcwd()).'/'.$path;
+        $parent = realpath(dirname($absolute));
+
+        return $parent === false ? $absolute : rtrim($parent, '/').'/'.basename($absolute);
     }
 }

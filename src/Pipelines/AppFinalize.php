@@ -9,7 +9,7 @@ use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Exceptions\CommandFailedException;
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Payloads\MigrationFailure;
-use Kalimera\Services\InstallerOptionStore;
+use Kalimera\Services\PublishedStubRepairer;
 use Kalimera\Services\SailCommandBuilder;
 
 use function Laravel\Prompts\warning;
@@ -23,6 +23,14 @@ readonly class AppFinalize implements Pipeline
      * flaky download, so it gets its own budget rather than ProcessRunner::NETWORK_ATTEMPTS.
      */
     private const int MIGRATE_ATTEMPTS = 3;
+
+    /**
+     * Where rector caches, as config/config.php in the package sets it: sys_get_temp_dir()
+     * inside the container. Kept as rector's own default rather than pinned into the
+     * published rector.php, so the cache stays on the container's filesystem instead of
+     * crossing the bind mount on every file it touches.
+     */
+    private const string RECTOR_CACHE_PATH = '/tmp/rector_cached_files';
 
     public function __construct(
         private InstallerOption $installerOption,
@@ -140,8 +148,8 @@ readonly class AppFinalize implements Pipeline
     {
         if ($this->installerOption->wantsQualityTool('rector')) {
             // Rector needs a second pass to converge (a first-pass rewrite can enable further rules).
-            $this->softRun(command: $this->sailCommandBuilder->composer('rector:fix'), failure: 'Rector could not refactor the fresh codebase.');
-            $this->softRun(command: $this->sailCommandBuilder->composer('rector:fix'), failure: 'Rector could not refactor the fresh codebase.');
+            $this->refactor();
+            $this->refactor();
         }
 
         if ($this->installerOption->wantsQualityTool('pint')) {
@@ -149,28 +157,30 @@ readonly class AppFinalize implements Pipeline
         }
 
         if ($this->installerOption->wantsQualityTool('phpstan')) {
-            try {
-                $this->processRunner->runCommand(command: $this->sailCommandBuilder->composer('phpstan'), cwd: $this->sailCommandBuilder->path());
-            } catch (Throwable) {
-                warning('PHPStan found issues in the fresh skeleton — generating a baseline so you start green.');
+            $this->repairPublishedStubs();
 
-                $this->softRun(
-                    command: $this->sailCommandBuilder->command(
-                        'php',
-                        'vendor/bin/phpstan',
-                        'analyse',
-                        '--generate-baseline=phpstan-baseline.neon',
-                        '--allow-empty-baseline',
-                        '--memory-limit=1G',
-                    ),
-                    failure: 'PHPStan baseline generation failed — run it manually.',
+            try {
+                // The findings a fresh skeleton used to arrive with are repaired above
+                // rather than written into a baseline, so anything still here is a stub
+                // this version does not know about. That is worth naming, but not worth
+                // forty lines of report or a file that conceded the gate on day one.
+                $this->processRunner->runCommand(
+                    command: $this->sailCommandBuilder->composer('phpstan'),
+                    cwd: $this->sailCommandBuilder->path(),
+                    replayTail: false,
                 );
+            } catch (Throwable) {
+                warning('PHPStan is not green on the fresh skeleton — run `sail composer phpstan` to see what it found.');
             }
         }
 
         if ($this->installerOption->qualityTools === []) {
             return;
         }
+
+        // Pint reformatted the codebase a moment ago, so every hash rector cached during
+        // the passes above is now stale and `quality` runs rector:dry over the lot.
+        $this->clearRectorCache();
 
         $this->softRun(
             command: $this->sailCommandBuilder->composer('quality'),
@@ -180,11 +190,6 @@ readonly class AppFinalize implements Pipeline
 
     private function commit(): void
     {
-        $this->processRunner->applyFileChange(
-            action: fn () => (new InstallerOptionStore)->forget($this->installerOption->targetPath),
-            description: 'remove .kalimera.json — the scaffold completed, --continue is no longer needed',
-        );
-
         if (! $this->processRunner->isDryRun() && ! is_dir($this->installerOption->targetPath.'/.git')) {
             $this->softRun(command: ['git', 'init', '-b', 'main'], failure: 'git init failed.');
         }
@@ -193,6 +198,56 @@ readonly class AppFinalize implements Pipeline
         $this->softRun(
             command: ['git', 'commit', '-m', 'chore: scaffold application with kalimera'],
             failure: 'git commit failed — commit manually when ready.',
+        );
+    }
+
+    /**
+     * Rector drops a cache shard with a check-then-act — it confirms the directory is
+     * empty and only then removes it — so a second process that empties the same shard in
+     * between leaves the first to fail the whole run on an rmdir returning ENOENT. Only a
+     * file whose hash no longer matches the cache reaches that removal, and a pass that
+     * rewrites the codebase is precisely what makes every hash stale, which is why the
+     * second convergence pass is where it surfaces.
+     *
+     * Starting from an empty cache keeps the removal out of the run entirely: with nothing
+     * on disk to drop, the cleanup returns before it ever reaches the directory.
+     */
+    private function refactor(): void
+    {
+        $this->softRun(
+            command: $this->sailCommandBuilder->command('php', 'vendor/bin/rector', 'process', '--clear-cache'),
+            failure: 'Rector could not refactor the fresh codebase.',
+        );
+    }
+
+    /**
+     * For the rector runs this pipeline does not issue itself, and so cannot hand
+     * --clear-cache to. Best-effort on purpose: a cache that could not be cleared costs
+     * the run nothing but the risk of the race above.
+     */
+    private function clearRectorCache(): void
+    {
+        if (! $this->installerOption->wantsQualityTool('rector')) {
+            return;
+        }
+
+        $this->processRunner->attemptQuietly(
+            command: $this->sailCommandBuilder->command('rm', '-rf', self::RECTOR_CACHE_PATH),
+            cwd: $this->sailCommandBuilder->path(),
+        );
+    }
+
+    /**
+     * After rector and pint, so their formatting cannot move the text these repairs match
+     * on, and before phpstan, which is the tool that rejects the stubs in the first place.
+     */
+    private function repairPublishedStubs(): void
+    {
+        $this->processRunner->applyFileChange(
+            action: function (): void {
+                new PublishedStubRepairer($this->installerOption->targetPath)->repair();
+            },
+            description: 'repair the published fortify, starter kit and horizon stubs that phpstan rejects',
         );
     }
 

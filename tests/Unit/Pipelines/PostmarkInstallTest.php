@@ -23,7 +23,7 @@ function seedPostmarkApp(string $targetPath): void
     file_put_contents($targetPath.'/.env.example', "APP_NAME=demo\n");
 }
 
-it('requires the sdk and registers the push and pull scripts', function (): void {
+it('requires the mail transport and registers the push and pull scripts', function (): void {
     $targetPath = tempDir().'/demo-app';
     seedPostmarkApp($targetPath);
     $processRunner = new FakeProcessRunner;
@@ -32,7 +32,10 @@ it('requires the sdk and registers the push and pull scripts', function (): void
 
     $manifest = json_decode((string) file_get_contents($targetPath.'/composer.json'), true);
 
-    expect($processRunner->commandLines())->toBe(['./vendor/bin/sail composer require -W wildbit/postmark-php'])
+    // The transport behind config/mail.php's 'postmark' entry, not Postmark's HTTP SDK:
+    // the SDK caps guzzle at ^7.8 and would walk Laravel 13's HTTP stack back a major
+    // version to install an API client nothing in the scaffold calls.
+    expect($processRunner->commandLines())->toBe(['./vendor/bin/sail composer require symfony/postmark-mailer'])
         ->and($manifest['scripts'])->toHaveKeys(['postmark:push', 'postmark:pull'])
         // The existing scripts must survive the edit.
         ->and($manifest['scripts']['test'])->toBe('pest');

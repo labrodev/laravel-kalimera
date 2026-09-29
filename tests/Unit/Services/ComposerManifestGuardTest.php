@@ -205,3 +205,25 @@ it('delegates the remaining runner behaviour', function (): void {
         ->and($quietResult)->toBeTrue()
         ->and($processRunner->fileActions)->toBe(['do something']);
 });
+
+it('keeps the tail of an attempt it goes on to recover from off the terminal', function (): void {
+    $targetPath = tempDir();
+    file_put_contents($targetPath.'/composer.json', healthyManifest());
+    $processRunner = new FakeProcessRunner;
+    $processRunner->failOn('composer require', times: 1);
+
+    makeComposerManifestGuard($targetPath, $processRunner)->runCommand(
+        attempts: 2,
+        command: ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'],
+        cwd: $targetPath,
+    );
+
+    $replays = array_column($processRunner->commands, 'replayTail');
+
+    // This guard drives its own retry loop, so the inner runner is always on its single
+    // attempt and, left to itself, would replay forty lines for a failure the very next
+    // attempt clears — and forty more for each recovery command run in between.
+    // The failed first attempt, then the two recovery commands, then the retry that
+    // sticks — only the last of which has a failure left worth putting on screen.
+    expect($replays)->toBe([false, false, false, true]);
+});

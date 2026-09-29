@@ -46,7 +46,7 @@ readonly class ShellRunner implements ProcessRunner
     /**
      * @param  list<string>  $command
      */
-    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1): void
+    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1, bool $replayTail = true): void
     {
         // Transient container filesystem or network hiccups have failed otherwise-sound
         // composer commands mid-scaffold; a delayed retry absorbs them.
@@ -58,7 +58,7 @@ readonly class ShellRunner implements ProcessRunner
                 $this->runCommandOnce(
                     command: $command,
                     cwd: $cwd,
-                    replayTail: $attempt === $attempts,
+                    replayTail: $replayTail && $attempt === $attempts,
                     timeout: $timeout,
                 );
 

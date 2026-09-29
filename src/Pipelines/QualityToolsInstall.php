@@ -29,6 +29,10 @@ readonly class QualityToolsInstall implements Pipeline
         return 'Setting up static analysis tools';
     }
 
+    /**
+     * Vet is chosen at the same prompt as these three but installed by VetInstall at the
+     * end of the plan, so it is deliberately absent here — see InstallerOption::wantsStaticAnalysis().
+     */
     public function execute(): void
     {
         $packages = [];
@@ -113,12 +117,11 @@ readonly class QualityToolsInstall implements Pipeline
             $this->processRunner->applyFileChange(
                 action: function () use ($templatePublisher): void {
                     $templatePublisher(destination: 'phpstan.neon.dist', template: 'phpstan.neon.dist');
-                    $templatePublisher(destination: 'phpstan-baseline.neon', template: 'phpstan-baseline.neon');
                     $this->stripSrcPathUnlessScaffolded(file: 'phpstan.neon.dist', line: "        - src\n");
 
                     $this->discardSkeletonConfig();
                 },
-                description: 'publish phpstan.neon.dist with an empty baseline (replaces the skeleton phpstan.neon)',
+                description: 'publish phpstan.neon.dist (replaces the skeleton phpstan.neon)',
             );
 
             $this->processRunner->applyFileChange(

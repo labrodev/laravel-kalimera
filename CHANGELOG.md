@@ -9,25 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- [Laravel Vet](https://github.com/laravel/vet) as a default quality tool: `vet` joins
+  `qualityTools` alongside pint, phpstan and rector, and is preselected. Its step is the last
+  one in the plan that touches composer, because the `vet.json` it records becomes the
+  application's trust baseline and has to describe the vendor directory the whole scaffold
+  produced — and because its composer plugin fails any install of a package the trust file does
+  not already cover, which every package step after it would be. The plugin is allowed in
+  composer.json *before* the `require`, since composer aborts on an unlisted composer-plugin
+  rather than warning past it, leaving the package in the manifest and out of `vendor/`. Adds a
+  `vet` composer script and `@vet` to `quality`, so an unreviewed dependency change fails the
+  gate. No `minimum-release-age` is recorded: a floor rejects releases younger than it even when
+  they are trusted, so setting one would hand over an application failing its own audit with no
+  way to clear it unattended. The step skips itself with a warning when the application's PHP
+  constraint is below vet's own 8.4 requirement, rather than failing the scaffold two steps from
+  the end.
 - `--verbose` / `-v`: command output is condensed to a single progress line by default —
   the Sail image build alone is tens of thousands of apt lines — and this streams it raw
   instead. A failed command replays its last 40 lines either way, and `--log` captures
   everything regardless of the flag.
-- Step checkpointing for `--continue`: every finished step is recorded in
-  `.kalimera-steps.json` beside `.kalimera.json`, so a resume starts at the step that broke
-  instead of replaying the whole plan. Both files are gitignored and removed when the
-  scaffold completes. Starting the Sail containers is exempt and always re-runs: the
+- Step checkpointing for `--continue`: every finished step is recorded in `.kalimera.json`
+  under `completedSteps`, beside the saved `answers`, so a resume starts at the step that broke
+  instead of replaying the whole plan. The file is versioned, gitignored, and removed once —
+  by the orchestrator, after the whole plan has finished. A flat answers file and a
+  `.kalimera-steps.json` left by an earlier release are still read. Starting the Sail containers is exempt and always re-runs: the
   checkpoint records that they were started once, not that they are up now.
 - Published templates no longer overwrite a hand-edited file. When the destination differs
   from the template — which happens when a step re-runs under `--continue` over a config
   edited while diagnosing the failure — the original is kept beside it as `.bak` (`.bak2`,
   `.bak3`, … for repeats) and the substitution is announced. A backup that cannot be
   written cancels the publish rather than destroying the edit.
-- Sail start discards an inherited compose project before the first `up`. Compose derives
-  its project name from the directory, so a name used by an earlier run inherits that run's
-  containers and volumes — including a half-migrated database. The containers and volumes
-  are asked for by name and `down -v` runs only if something answers, naming exactly what
-  it is about to remove; a `--continue` run keeps its data and is never asked.
+- Sail start pins a per-path compose project name and discards an inherited project before
+  the first `up`. A fresh scaffold writes `COMPOSE_PROJECT_NAME=<app>-<hash of the full path>`
+  to `.env`, so two applications with the same directory name are separate projects to docker.
+  The containers and volumes are asked for by that name and `down -v` runs only if something
+  answers — which only an earlier run in the same directory can — naming exactly what it is
+  about to remove; a `--continue` run keeps its data and is never asked.
+- `InstallPlan`, the step list on its own, with its ordering rules asserted by name
+  (`InstallPlanTest`): containers up before anything runs through sail, the PHP constraint
+  before any package resolves, vet after every other dependency change, finalize last. Rules
+  about what a step does are checked against the commands it actually issues, so a new step
+  running `composer require` is held to the vet rule without being added to a list.
+- A rerun test (`StepRerunTest`) that runs every step a second time, as `--continue` would
+  after it failed halfway, and asserts the application on disk does not change.
 - Migration failures are classified before being retried (`MigrationFailure`). Waiting only
   helps when the database could not be *reached* — SQL class 08, MySQL 2002/2003/2006, or
   no output at all. A server that has answered gives the same verdict every time, so
@@ -49,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The transcript keeps its file open for the whole run instead of opening, locking and
+  closing it for every chunk of child output — about 17× faster over a Sail build's worth of
+  output (50k chunks: 1.4 s → 84 ms). Writes stay unbuffered, so a killed run keeps its last
+  lines.
+- Application paths are canonical: `app`, `./app` and the same directory reached through a
+  symlink resolve to one path, so the run lock and everything else keyed on it see one
+  application.
 - `ProcessRunner::runCommandQuietly()` is split into `probe()` and `attemptQuietly()`.
   Both are silent and neither throws, but a probe only asks while an attempt changes the
   environment — so a dry run skips the attempt (and prints it, since the quiet commands
@@ -66,6 +96,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repositories — rather than collecting answers for a step that will not run.
 
 ### Fixed
+
+- Scaffolding no longer wipes the database of another application that shares the directory
+  name. The compose project used to be the bare directory name, so `SailStart`'s cleanup of an
+  "inherited" project ran `down -v` against an unrelated live application — without asking,
+  including under `--defaults`.
+- A fresh run that waited at a prompt while another run created and finished the same
+  directory now stops after taking the lock, instead of scaffolding over that application as
+  if it were new and clearing its containers.
+- `--continue` refuses to resume when state exists but its answers are missing or unreadable,
+  instead of rebuilding the plan from fresh answers while still skipping the steps that ran
+  under the old ones. `AppFinalize` no longer deletes the answers mid-step, which left exactly
+  that state behind when a run was interrupted between the two deletes.
+- The composer.json snapshot the manifest guard restores from lives in the run state and goes
+  with it. It used to sit in the system temp directory forever, where it could be restored
+  into the next application scaffolded at the same path.
+- A port taken by another program after it was chosen is named in the error — port and `.env`
+  key — instead of surfacing as a second "Sail could not start" about leftover containers.
+- The manifest guard's warning names the full path of the damaged `composer.json` it kept,
+  not just its file name.
 
 - A migration the database itself refused no longer destroys the database. Only a schema
   conflict or a server that never answered leads to `down -v`; a migration that will not

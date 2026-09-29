@@ -31,6 +31,17 @@ class ComposerFileEditor
     }
 
     /**
+     * Composer refuses outright to install a package of type composer-plugin that this
+     * list does not name — not a warning it goes on past, but a PluginManager exception
+     * that aborts the command with the package half-installed. So the entry has to be in
+     * the manifest before the `require` runs, never after it.
+     */
+    public function allowPlugin(string $package): void
+    {
+        $this->contents['config']['allow-plugins'][$package] = true;
+    }
+
+    /**
      * @param  list<string>|string  $script
      */
     public function addScript(string $name, array|string $script): void

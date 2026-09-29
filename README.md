@@ -78,7 +78,7 @@ Options:
 |---|---|
 | `--dry-run` | Print every command without executing anything |
 | `--defaults` | Skip all prompts and accept the preselected answers |
-| `--continue` | Resume into an existing app directory after a failed run — the answers saved in its `.kalimera.json` are reused, no prompts, and the steps listed in its `.kalimera-steps.json` are skipped so the run picks up where it stopped. Both files are written after `laravel new`, gitignored, and removed when the scaffold completes. Editing the answers before resuming only affects steps that have *not* been checkpointed — a step already listed is skipped whatever its answers now say, so delete it from the list as well to have the edit take effect |
+| `--continue` | Resume into an existing app directory after a failed run — the answers saved in its `.kalimera.json` are reused, no prompts, and the steps that file records as done are skipped so the run picks up where it stopped. The file is written after `laravel new`, gitignored, and removed when the scaffold completes. Editing the answers before resuming only affects steps that have *not* been checkpointed — a step already listed in `completedSteps` is skipped whatever its answers now say, so delete it from the list as well to have the edit take effect |
 | `--config=path` | Load the preselected answers and the additional-packages catalog from a JSON config — see [Configuration](#configuration). `kalimera.config.json` in the current directory is picked up automatically |
 | `--log[=path]` | Write an append-only transcript of steps, commands and outcomes to a log file (defaults to `kalimera.log` inside the new application, gitignored there) |
 | `--verbose`, `-v` | Stream the raw output of every command instead of condensing it to a progress line. Off by default: the Sail image build alone is tens of thousands of apt lines, which buries the installer's own steps. A failed command always replays its last 40 lines regardless, and `--log` captures everything either way |
@@ -115,14 +115,25 @@ Options:
    `postmark:pull` composer scripts and a `POSTMARK_API_KEY` env placeholder.
 9. Optionally scaffolds the **Core structure**: `src/{Domain,Shared,Support,Feature,Infrastructure}`
    with `.gitkeep` files, mapped to a PSR-4 namespace of your choice (`Core` by default).
-10. Installs the **AI-agent guard**: publishes `app/Providers/AgentGuardServiceProvider.php` and
+10. Records the **dependency audit trust file** with [Laravel Vet](https://github.com/laravel/vet)
+    (chosen at the quality-tools prompt, on by default): requires `laravel/vet`, allows its
+    plugin in `composer.json`, and writes `vet.json` from every package the scaffold installed.
+    Vet is a composer plugin, so from here on each `composer install`, `update` and `require`
+    shows the code it is about to write into `vendor/` and fails on a version nobody has read —
+    review it with `sail composer vet` in a terminal, which will hand the diffs to your coding
+    agent if you ask. Adds a `vet` composer script and appends `@vet` to `quality`, so an
+    unreviewed dependency change fails the gate. Commit `vet.json`. No `minimum-release-age` is
+    set: the floor rejects releases younger than it *even when trusted*, so a fresh application
+    would arrive failing its own audit — [TROUBLESHOOTING.md](TROUBLESHOOTING.md) has the recipe
+    for turning it on deliberately.
+11. Installs the **AI-agent guard**: publishes `app/Providers/AgentGuardServiceProvider.php` and
     registers it last in `bootstrap/providers.php`, so destructive database commands
     (`db:wipe`, `migrate:fresh/refresh/reset/rollback`) are prohibited whenever an AI agent is
     driving the app — exactly as they already are in production. Detection comes from
     `laravel/pao`'s `AgentDetector`, which ships with new Laravel apps by default and recognizes
     Claude Code, Cursor, Codex, Copilot, Gemini and others. Registration order matters and the
     provider must boot **after** `AppServiceProvider`; see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-11. Finalizes: migrates, `npm install`, formats the fresh skeleton with Pint + Rector,
+12. Finalizes: migrates, `npm install`, formats the fresh skeleton with Pint + Rector,
     baselines PHPStan if needed so `composer quality` starts green, and commits.
 
 ## Configuration

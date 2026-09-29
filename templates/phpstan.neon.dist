@@ -1,10 +1,15 @@
 includes:
     - vendor/larastan/larastan/extension.neon
     - vendor/nesbot/carbon/extension.neon
-    - phpstan-baseline.neon
 
 parameters:
     level: 7
+
+    # Laravel documents many runtime values more narrowly than they are in practice:
+    # $request->user() is typed to the app's own User model, so a check against a contract
+    # that model does not yet implement reads as impossible rather than as the guard it is.
+    # A documented type is a strong hint here, not proof.
+    treatPhpDocTypesAsCertain: false
 
     paths:
         - app

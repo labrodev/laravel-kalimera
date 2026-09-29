@@ -2,57 +2,35 @@
 
 declare(strict_types=1);
 
-use Kalimera\KalimeraInstaller;
-use Kalimera\Tests\Fakes\FakeExecutableFinder;
-use Kalimera\Tests\Fakes\FakePortChecker;
+use Kalimera\Services\ComposeProjectName;
 use Kalimera\Tests\Fakes\FakeProcessRunner;
-
-/**
- * Runs the installer with every collaborator faked. The scoped error handler mutes
- * the @-suppressed warnings (missing .env probes) that Pest would otherwise report.
- *
- * @param  list<string>  $argv
- */
-function runFakeInstaller(FakeProcessRunner $processRunner, array $argv): int
-{
-    $kalimeraInstaller = new KalimeraInstaller(
-        executableFinder: new FakeExecutableFinder,
-        portChecker: new FakePortChecker,
-        processRunner: $processRunner,
-    );
-
-    set_error_handler(fn (): bool => true);
-
-    try {
-        return $kalimeraInstaller->execute($argv);
-    } finally {
-        restore_error_handler();
-    }
-}
 
 it('produces the full default dry-run command sequence', function (): void {
     $processRunner = new FakeProcessRunner(dryRun: true);
+    $targetPath = tempDir().'/demo-app';
+    $project = new ComposeProjectName($targetPath)->unique();
 
-    $exitCode = runFakeInstaller($processRunner, ['new', tempDir().'/demo-app', '--dry-run', '--defaults']);
+    $exitCode = runFakeInstaller($processRunner, ['new', $targetPath, '--dry-run', '--defaults']);
 
     expect($exitCode)->toBe(0)
         // Questions get asked during a rehearsal — they change nothing, and their answers
         // are what it reports. Side effects do not: this list staying empty is the promise.
         ->and($processRunner->quietCommands)->toBe([])
         // And the promise is only worth something if the plan reached the side effects at
-        // all. These are the two the run asked for and did not get — an empty list above
+        // all. These are the ones the run asked for and did not get — an empty list above
         // with an empty list here would just mean the steps never got that far.
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->skippedQuietCommands))->toBe([
             ['./vendor/bin/sail', 'down', '-v'],
             ['docker', 'compose', 'exec', '-T', '-u', 'root', 'laravel.test', 'chown', '-R', 'sail', '/home/sail'],
+            ['./vendor/bin/sail', 'rm', '-rf', '/tmp/rector_cached_files'],
         ])
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->probeCommands))->toBe([
             ['docker', 'info'],
-            ['docker', 'container', 'inspect', 'demo-app-laravel.test-1'],
-            ['docker', 'container', 'inspect', 'demo-app-pgsql-1'],
-            ['docker', 'container', 'inspect', 'demo-app-redis-1'],
-            ['docker', 'volume', 'inspect', 'demo-app_sail-pgsql'],
-            ['docker', 'volume', 'inspect', 'demo-app_sail-redis'],
+            ['docker', 'container', 'inspect', $project.'-laravel.test-1'],
+            ['docker', 'container', 'inspect', $project.'-pgsql-1'],
+            ['docker', 'container', 'inspect', $project.'-redis-1'],
+            ['docker', 'volume', 'inspect', $project.'_sail-pgsql'],
+            ['docker', 'volume', 'inspect', $project.'_sail-redis'],
         ])
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->commands))->toBe([
             ['laravel', 'new', 'demo-app', '--pest', '--git', '--no-boost', '--no-interaction', '--react'],
@@ -70,11 +48,13 @@ it('produces the full default dry-run command sequence', function (): void {
             ['./vendor/bin/sail', 'artisan', 'boost:install', '--guidelines', '--skills', '--mcp', '--no-interaction'],
             ['./vendor/bin/sail', 'artisan', 'boost:update', '--no-discover', '--no-interaction'],
             ['./vendor/bin/sail', 'composer', 'dump-autoload'],
+            ['./vendor/bin/sail', 'composer', 'require', 'laravel/vet', '--dev'],
+            ['./vendor/bin/sail', 'php', 'vendor/bin/vet', '--init', '--no-interaction'],
             ['./vendor/bin/sail', 'artisan', 'migrate', '--no-interaction'],
             ['./vendor/bin/sail', 'npm', 'install'],
             ['./vendor/bin/sail', 'composer', 'ide-helper'],
-            ['./vendor/bin/sail', 'composer', 'rector:fix'],
-            ['./vendor/bin/sail', 'composer', 'rector:fix'],
+            ['./vendor/bin/sail', 'php', 'vendor/bin/rector', 'process', '--clear-cache'],
+            ['./vendor/bin/sail', 'php', 'vendor/bin/rector', 'process', '--clear-cache'],
             ['./vendor/bin/sail', 'composer', 'pint:fix'],
             ['./vendor/bin/sail', 'composer', 'phpstan'],
             ['./vendor/bin/sail', 'composer', 'quality'],
@@ -83,22 +63,25 @@ it('produces the full default dry-run command sequence', function (): void {
         ])
         ->and($processRunner->fileActions)->toBe([
             'normalize bootstrap/providers.php to inline class names',
-            'gitignore the .kalimera.json and .kalimera-steps.json resume state',
+            'gitignore the .kalimera.json resume state',
             'save the chosen answers to .kalimera.json so --continue can reuse them',
             'remove the sqlite database left over from `laravel new`',
             'sync the DB_* block from .env to .env.example',
             'pin the compose file to the PHP 8.5 Sail runtime',
+            'set COMPOSE_PROJECT_NAME='.$project.' in .env so no other application shares its containers',
             'publish pint.json',
-            'publish phpstan.neon.dist with an empty baseline (replaces the skeleton phpstan.neon)',
+            'publish phpstan.neon.dist (replaces the skeleton phpstan.neon)',
             'gitignore the generated ide-helper files',
             'publish rector.php',
             'add composer scripts: pint:dry, pint:fix, phpstan, phpstan-clear, ide-helper, rector:dry, rector:fix, quality',
             'preconfigure boost.json with agents: claude_code, cursor, codex',
             'create src/{Domain,Shared,Support,Feature,Infrastructure} with .gitkeep files',
             'map the Core\\ namespace to src/ in composer.json',
+            'allow the laravel/vet composer plugin in composer.json',
+            'add composer script: vet, and add @vet to quality',
             'publish app/Providers/AgentGuardServiceProvider.php',
             'register AgentGuardServiceProvider in bootstrap/providers.php',
-            'remove .kalimera.json — the scaffold completed, --continue is no longer needed',
+            'repair the published fortify, starter kit and horizon stubs that phpstan rejects',
         ]);
 });
 
@@ -188,4 +171,26 @@ it('prints usage and exits successfully for the help command', function (): void
 
 it('fails for an unknown command', function (): void {
     expect(runFakeInstaller(new FakeProcessRunner(dryRun: true), ['definitely-not-a-command']))->toBe(1);
+});
+
+// Vet is picked at the quality-tools prompt but never installed by that step, so a run
+// that wants only vet has to skip QualityToolsInstall — whose `composer require --dev`
+// would otherwise name no packages at all — and still record the trust file.
+it('installs vet on its own when no static analysis tool is selected', function (): void {
+    $configPath = tempDir().'/kalimera.config.json';
+    file_put_contents($configPath, json_encode([
+        'preselected' => ['qualityTools' => ['vet']],
+    ], JSON_THROW_ON_ERROR));
+
+    $processRunner = new FakeProcessRunner(dryRun: true);
+
+    $exitCode = runFakeInstaller($processRunner, ['new', tempDir().'/demo-app', '--dry-run', '--defaults', '--config='.$configPath]);
+
+    $lines = $processRunner->commandLines();
+
+    expect($exitCode)->toBe(0)
+        ->and($lines)->toContain('./vendor/bin/sail composer require laravel/vet --dev')
+        ->and($lines)->toContain('./vendor/bin/sail php vendor/bin/vet --init --no-interaction')
+        ->and(implode(' ', $lines))->not->toContain('composer require --dev laravel/pint')
+        ->and($processRunner->fileActions)->not->toContain('publish pint.json');
 });

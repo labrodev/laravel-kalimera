@@ -10,6 +10,7 @@ use Kalimera\Payloads\InstallerOption;
 use Kalimera\Services\FileWriter;
 use Kalimera\Services\GitignoreEditor;
 use Kalimera\Services\InstallerOptionStore;
+use Kalimera\Services\RunStateFile;
 
 use function Laravel\Prompts\info;
 
@@ -91,15 +92,15 @@ readonly class AppCreate implements Pipeline
     }
 
     /**
-     * Both files exist only for the span of a run and are removed when it completes, so
-     * they are only ever present in a working tree the user is about to commit if the
-     * run failed — which is precisely when they must not be committed.
+     * The state file exists only for the span of a run and is removed when it completes,
+     * so it is only ever present in a working tree the user is about to commit if the run
+     * failed — which is precisely when it must not be committed.
      */
     private function ignoreResumeState(): void
     {
         $this->processRunner->applyFileChange(
-            action: fn () => new GitignoreEditor($this->installerOption->targetPath)->ensure(['/.kalimera.json', '/.kalimera-steps.json']),
-            description: 'gitignore the .kalimera.json and .kalimera-steps.json resume state',
+            action: fn () => new GitignoreEditor($this->installerOption->targetPath)->ensure(['/'.RunStateFile::FILENAME]),
+            description: 'gitignore the '.RunStateFile::FILENAME.' resume state',
         );
     }
 
@@ -107,7 +108,7 @@ readonly class AppCreate implements Pipeline
     {
         $this->processRunner->applyFileChange(
             action: fn () => (new InstallerOptionStore)->save($this->installerOption),
-            description: 'save the chosen answers to .kalimera.json so --continue can reuse them',
+            description: 'save the chosen answers to '.RunStateFile::FILENAME.' so --continue can reuse them',
         );
     }
 

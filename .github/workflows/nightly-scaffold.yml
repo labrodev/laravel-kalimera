@@ -164,12 +164,12 @@ jobs:
           # shellcheck disable=SC2016 # the single quotes are the point: $path and $recorded
           # belong to PHP, and the shell expanding them would empty the script.
           php -r '
-            $path = getenv("RUNNER_TEMP")."/resume-app/.kalimera-steps.json";
+            $path = getenv("RUNNER_TEMP")."/resume-app/.kalimera.json";
             if (! file_exists($path)) {
               fwrite(STDERR, "No checkpoint was written.\n");
               exit(1);
             }
-            $recorded = json_decode(file_get_contents($path), true);
+            $recorded = json_decode(file_get_contents($path), true)["completedSteps"] ?? [];
             fwrite(STDOUT, "checkpointed: ".implode(", ", $recorded)."\n");
             foreach (["AppCreate", "SailInstall", "SailStart", "PhpConstraintApply"] as $step) {
               if (! in_array($step, $recorded, true)) {
@@ -190,9 +190,9 @@ jobs:
           # shellcheck disable=SC2016 # PHP variables, not shell ones — see the step above.
           php -r '
             $path = getenv("RUNNER_TEMP")."/resume-app/.kalimera.json";
-            $answers = json_decode(file_get_contents($path), true);
-            $answers["additionalPackages"] = [];
-            file_put_contents($path, json_encode($answers, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+            $state = json_decode(file_get_contents($path), true);
+            $state["answers"]["additionalPackages"] = [];
+            file_put_contents($path, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
           '
 
       - name: Resume
@@ -244,9 +244,12 @@ jobs:
             exit 1
           fi
 
-          test ! -f .kalimera-steps.json
           test ! -f .kalimera.json
-          grep -qF '/.kalimera-steps.json' .gitignore
+          grep -qF '/.kalimera.json' .gitignore
+
+          # The compose project carries a hash of the path, so no other application called
+          # resume-app can share its containers or its database.
+          grep -qE '^COMPOSE_PROJECT_NAME=resume-app-[0-9a-f]{8}$' .env
 
       - name: Upload the transcripts
         if: always()

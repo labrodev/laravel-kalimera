@@ -55,17 +55,35 @@ scaffold. That is deliberate: a resume promises to leave the previous run's cont
 alone, which would be exactly the wrong thing to do while creating a new application under a name
 Docker still has a project for.
 
-It also reads `.kalimera-steps.json`, the list of steps the failed run finished, and skips them —
-so a resume starts at the step that broke instead of replaying the whole plan. Starting the Sail
+The same file lists, under `completedSteps`, the steps the failed run finished, and a resume skips
+them — so it starts at the step that broke instead of replaying the whole plan. Starting the Sail
 containers is the one exception and always runs: a checkpoint records that they were started once,
-not that they are up now. To force a completed step to run again, delete its entry from that file
-(or delete the file to replay everything).
+not that they are up now. To force a completed step to run again, delete its entry from
+`completedSteps` (or empty the list to replay everything).
 
-The two files work together, and that matters when the fix is to change an answer. Editing
-`.kalimera.json` — dropping a package that will not resolve, adding a quality tool you decided you
-want — only reaches the steps still left to run. A step already listed in `.kalimera-steps.json` is
+The two halves of the file work together, and that matters when the fix is to change an answer.
+Editing `answers` — dropping a package that will not resolve, adding a quality tool you decided you
+want — only reaches the steps still left to run. A step already listed in `completedSteps` is
 skipped no matter what its answers now say, so delete its entry there too when the edit belongs to
 work that already happened.
+
+A run that failed on an earlier kalimera release left its answers flat in `.kalimera.json` and its
+steps in a separate `.kalimera-steps.json`. Both are still read, and folded into the one file on the
+first write.
+
+## `Cannot resume <path>: .kalimera.json is there but the answers it should hold are missing or unreadable`
+
+**When:** `--continue` into an application whose `.kalimera.json` was deleted, hand-edited into
+invalid JSON, or lost its `answers` — or one an earlier release left with only `.kalimera-steps.json`
+behind.
+
+**Why it happens:** The steps already recorded ran under the saved answers. Rebuilding the plan
+from fresh ones — prompts, or whatever `--defaults` says today — would still skip those steps and
+finish an application that is half one configuration and half the other, with nothing to say so.
+So kalimera refuses instead of guessing.
+
+**Fix:** Restore the `answers` object (from the transcript's argv and your config, or from a copy),
+or delete the application directory and scaffold fresh.
 
 ## A resumed run replaced a config you edited, leaving a `.bak` file behind
 
@@ -89,7 +107,7 @@ earlier one.
 
 **Fix:** Nothing is lost — your version is the `.bak` file. Merge whatever you meant to keep back
 into the published file and delete the backup. To stop the step republishing at all on the next
-resume, add it to `.kalimera-steps.json` (see the entry above); to keep your file untouched
+resume, add it to `completedSteps` in `.kalimera.json` (see the entry above); to keep your file untouched
 instead, that is the only way, since a step that runs will publish its template.
 
 The one case where publishing is skipped is a backup that could not be written — a read-only
@@ -175,24 +193,25 @@ DETAIL:  Key (relname, relnamespace)=(migrations_id_seq, 2200) already exists.
 (SQL: create table "migrations" ("id" serial not null primary key, ...))
 ```
 
-**When:** Scaffolding a new app into a directory whose name was used by an earlier run that never
-finished. The MySQL wording is `SQLSTATE[42S01] ... Table 'migrations' already exists`.
+**When:** Scaffolding a new app into a directory an earlier, unfinished run used — or, on
+applications scaffolded before kalimera pinned `COMPOSE_PROJECT_NAME`, into any directory whose
+*name* an earlier run used. The MySQL wording is `SQLSTATE[42S01] ... Table 'migrations' already exists`.
 
-**Why it happens:** Compose derives its project name from the directory, and volumes are named
-`<project>_sail-pgsql`. A new scaffold under a name used before therefore mounts the *old*
-database. That volume can hold `migrations_id_seq` without the `migrations` table — Laravel's
+**Why it happens:** Compose files volumes under the project name as `<project>_sail-pgsql`, and
+left to itself it takes that name from the directory. A new scaffold under a project name used
+before therefore mounts the *old* database. That volume can hold `migrations_id_seq` without the `migrations` table — Laravel's
 `hasTable('migrations')` returns false, issues `create table migrations (id serial ...)`, and the
 implicit sequence collides with the orphan.
 
-**Fix:** kalimera now handles this itself, in two places. Before the first `up` on a fresh
-scaffold, `SailStart` asks docker whether anything already answers to this project name — the
-`<project>-<service>-1` containers and the `<project>_sail-<service>` volumes — and runs
-`sail down -v` only if something does, naming what it is about to remove. Nothing found means
-nothing touched, which is the usual case; a `--continue` run keeps its data and is never asked.
-Worth reading that warning when it appears: the directory was created moments ago, so whatever it
-names belongs to an earlier run *or to another application that happens to share the name*, and
-`down -v` takes its database too. If that is a project you still want, stop, and scaffold under a
-different name. If a conflict still gets through, `AppFinalize`
+**Fix:** kalimera now handles this itself, in three places. A fresh scaffold pins
+`COMPOSE_PROJECT_NAME=<app>-<hash of the full path>` in `.env`, so `~/work/api` and `~/side/api`
+are two projects to docker and can never share a database. Before the first `up`, `SailStart`
+asks docker whether anything already answers to that name — the `<project>-<service>-1`
+containers and the `<project>_sail-<service>` volumes — which only an earlier run in this very
+directory can have left, and runs `sail down -v` only if something does, naming what it is about
+to remove. Nothing found means nothing touched, which is the usual case; a `--continue` run keeps
+its data and is never asked. A resumed run whose `.env` predates the key keeps the directory-name
+project its containers already use. If a conflict still gets through, `AppFinalize`
 recreates the volume immediately rather than retrying three times first: `MigrationFailure` retries
 only when the database could not be *reached* (SQL class 08, MySQL 2002/2003/2006, or no output at
 all). Once the server has answered, its verdict will be the same on every attempt.
@@ -202,6 +221,19 @@ To clear it by hand:
 ```bash
 ./vendor/bin/sail down -v && ./vendor/bin/sail up -d --wait && ./vendor/bin/sail artisan migrate
 ```
+
+## `Sail could not start: something else on this machine is holding port N (KEY)`
+
+**When:** Starting the containers, usually on a `--continue` run some time after the first one.
+
+**Why it happens:** Host ports are chosen once, when `SailPortsConfigure` runs, and written to
+`.env`. That step is checkpointed, so a resume does not choose again — and another program (often
+a second kalimera application) may have taken the port since. `SailStart` retries once after
+clearing its own leftover containers; if the port is still taken after that, the holder is not
+this application, and a third `up` would fail the same way under an error about containers.
+
+**Fix:** Stop whatever holds the port, or set a free one for that key in the application's `.env`,
+then resume with `--continue --defaults`.
 
 ## The AI-agent guard silently does nothing — destructive commands still run
 
@@ -225,3 +257,61 @@ DB::prohibitDestructiveCommands(app()->isProduction() || AgentDetector::detect()
 
 Verify for real with `sail artisan migrate:fresh` — it must warn and refuse. `AgentGuardConfigure`
 appends the provider at the end of the array for exactly this reason.
+
+## Every composer command in a scaffolded app fails with "packages are not trusted"
+
+```
+   ERROR  [3] packages are not trusted. Run [./vendor/bin/vet] in a terminal to pick the ones
+          that you trust.
+```
+
+**When:** Any `sail composer install` / `update` / `require` in an application scaffolded with
+`vet` among its quality tools — most often right after adding a package.
+
+**Why it happens:** This is Vet working, not a failure. `laravel/vet` runs as a composer plugin
+and gates every install on `vet.json`: a version the file does not record is shown as a diff and
+refused, so a package nobody has read cannot reach `vendor/` unnoticed. Composer writes the new
+`composer.lock` before the plugin stops it, so lock and `vendor/` can disagree afterwards — and
+Vet then refuses to record anything until they agree again.
+
+**Fix:** Run `sail composer vet` **in a terminal**. The plugin never asks — it can only report —
+so a script, a CI job or an agent driving the app non-interactively will always exit 1 here. The
+interactive run lists the packages, will hand each diff to a coding agent if you ask it to, and
+records the ones you accept. If it refuses with "composer would write N packages that vendor/
+does not hold", run `sail composer install` first so the two agree, then vet again.
+
+Do not delete `vet.json` to get past this: that discards every recorded version, and the next
+`vet --init` re-trusts whatever is on disk unread — the one thing the file exists to prevent.
+
+## Turning on Vet's `minimum-release-age` after scaffolding
+
+**When:** You want the supply-chain delay — every release held back until it is N days old, so a
+compromised version has time to be found and pulled. Kalimera does not set it, because the floor
+rejects a release younger than it *even when the trust file records it*: a freshly scaffolded
+application would arrive failing its own audit, and nothing unattended can clear that.
+
+**Why it needs a recipe:** `vet --init --minimum-release-age=7` sets the floor and immediately
+fails on the young releases already installed. `composer update` answers that — re-resolving
+against the floor rewrites `composer.lock` onto releases old enough to pass — but Vet stops that
+same command before it writes them into `vendor/`, because they are versions nobody has read. The
+lock and `vendor/` now disagree, and `vet --fresh` refuses to record while they do. Run the four
+commands below in order and the project lands green; stop halfway and every composer command in
+it exits 1 until you review the difference in a terminal.
+
+```bash
+./vendor/bin/sail php vendor/bin/vet --init --minimum-release-age=7   # exits 1 — expected
+./vendor/bin/sail composer update                                     # exits 1 — expected, moves the lock
+./vendor/bin/sail composer install --no-plugins                       # syncs vendor/ to that lock
+./vendor/bin/sail php vendor/bin/vet --fresh                          # records it; keeps the floor
+```
+
+The third command is the one that matters: `--no-plugins` installs the lock Vet just produced
+with Vet's own gate off for that single command. It widens nothing — a baseline is recorded
+unread either way, `--init` included — it only lets the tree reach the versions the floor asked
+for before `--fresh` reads it. Afterwards `composer install`, `composer update` and
+`composer vet` all exit 0, and the floor applies to everything from there on.
+
+Expect the lock to move backwards by up to N days, `laravel/framework` included. Exempt packages
+with `minimum-release-age-exclude` in `vet.json` (`*` matches any part of a name, so `laravel/*`
+covers the first-party packages); Vet always exempts itself. Removing `minimum-release-age`
+switches the wait off again — the recorded versions stay trusted.

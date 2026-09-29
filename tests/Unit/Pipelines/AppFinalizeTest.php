@@ -5,6 +5,8 @@ declare(strict_types=1);
 use Kalimera\Exceptions\CommandFailedException;
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Pipelines\AppFinalize;
+use Kalimera\Services\InstallerOptionStore;
+use Kalimera\Services\RunStateFile;
 use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Tests\Fakes\FakeProcessRunner;
 
@@ -204,7 +206,7 @@ it('warns and continues when the quality gates fail', function (): void {
     $installerOption = makeInstallerOption(['qualityTools' => ['pint', 'phpstan', 'rector']]);
     $processRunner = new FakeProcessRunner;
     $processRunner->failOn('composer ide-helper');
-    $processRunner->failOn('rector:fix');
+    $processRunner->failOn('vendor/bin/rector process');
     $processRunner->failOn('pint:fix');
     $processRunner->failOn('composer phpstan');
     $processRunner->failOn('composer quality');
@@ -216,11 +218,10 @@ it('warns and continues when the quality gates fail', function (): void {
         './vendor/bin/sail artisan migrate --no-interaction',
         './vendor/bin/sail npm install',
         './vendor/bin/sail composer ide-helper',
-        './vendor/bin/sail composer rector:fix',
-        './vendor/bin/sail composer rector:fix',
+        './vendor/bin/sail php vendor/bin/rector process --clear-cache',
+        './vendor/bin/sail php vendor/bin/rector process --clear-cache',
         './vendor/bin/sail composer pint:fix',
         './vendor/bin/sail composer phpstan',
-        './vendor/bin/sail php vendor/bin/phpstan analyse --generate-baseline=phpstan-baseline.neon --allow-empty-baseline --memory-limit=1G',
         './vendor/bin/sail composer quality',
         'git add -A',
         'git commit -m chore: scaffold application with kalimera',
@@ -244,4 +245,57 @@ it('initializes a git repository when none exists', function (): void {
     makeAppFinalize($installerOption, $processRunner)->execute();
 
     expect($processRunner->commandLines())->toContain('git init -b main');
+});
+
+it('starts every rector pass it triggers from an empty cache', function (): void {
+    $installerOption = makeInstallerOption(['qualityTools' => ['pint', 'phpstan', 'rector']]);
+    $processRunner = new FakeProcessRunner;
+    markGitInitialized($installerOption);
+
+    makeAppFinalize($installerOption, $processRunner)->execute();
+
+    $rectorLines = array_values(array_filter(
+        $processRunner->commandLines(),
+        fn (string $line): bool => str_contains($line, 'vendor/bin/rector'),
+    ));
+    $quietLines = array_map(
+        fn (array $entry): string => implode(' ', $entry['command']),
+        $processRunner->quietCommands,
+    );
+
+    // Rector drops a cache shard with a check-then-act, and only a file whose hash went
+    // stale reaches that removal. The convergence passes clear their own cache; the sweep
+    // covers `quality`, whose rector:dry this pipeline cannot pass a flag to and which
+    // pint has just invalidated by reformatting every file.
+    expect($rectorLines)->toHaveCount(2)
+        ->and($rectorLines)->each->toContain('--clear-cache')
+        ->and($quietLines)->toContain('./vendor/bin/sail rm -rf /tmp/rector_cached_files');
+});
+
+it('leaves the rector cache alone when rector was not chosen', function (): void {
+    $installerOption = makeInstallerOption(['qualityTools' => ['pint']]);
+    $processRunner = new FakeProcessRunner;
+    markGitInitialized($installerOption);
+
+    makeAppFinalize($installerOption, $processRunner)->execute();
+
+    $quietLines = array_map(
+        fn (array $entry): string => implode(' ', $entry['command']),
+        $processRunner->quietCommands,
+    );
+
+    expect($quietLines)->not->toContain('./vendor/bin/sail rm -rf /tmp/rector_cached_files');
+});
+
+// It used to delete the saved answers itself, before its own checkpoint was written — so
+// an interruption in between left steps recorded against answers that were gone. The
+// orchestrator clears the whole state once, after the last step.
+it('leaves the run state for the orchestrator to clear', function (): void {
+    $installerOption = makeInstallerOption(['qualityTools' => []]);
+    markGitInitialized($installerOption);
+    (new InstallerOptionStore)->save($installerOption);
+
+    makeAppFinalize($installerOption, new FakeProcessRunner)->execute();
+
+    expect(new RunStateFile($installerOption->targetPath)->answers())->not->toBeNull();
 });

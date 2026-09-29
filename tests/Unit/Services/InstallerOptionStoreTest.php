@@ -2,7 +2,10 @@
 
 declare(strict_types=1);
 
+use Kalimera\Contracts\Pipeline;
+use Kalimera\Exceptions\InvalidTargetException;
 use Kalimera\Services\InstallerOptionStore;
+use Kalimera\Services\StepCheckpoint;
 
 it('round-trips the installer answers through the state file', function (): void {
     $installerOption = makeInstallerOption([
@@ -49,13 +52,44 @@ it('returns null when no state file exists', function (): void {
     expect($loaded)->toBeNull();
 });
 
-it('returns null when the state file is corrupted', function (): void {
+// A plan rebuilt from fresh answers would still skip the steps that ran under the old
+// ones, and finish an application that is half one configuration and half the other.
+it('refuses to resume when the state file cannot be read', function (): void {
     $targetPath = tempDir();
     file_put_contents($targetPath.'/.kalimera.json', '{not json');
 
-    $loaded = (new InstallerOptionStore)->load(appName: 'demo-app', dryRun: false, targetPath: $targetPath);
+    (new InstallerOptionStore)->load(appName: 'demo-app', dryRun: false, targetPath: $targetPath);
+})->throws(InvalidTargetException::class, 'answers it should hold are missing or unreadable');
 
-    expect($loaded)->toBeNull();
+// What an earlier release left when it was interrupted between deleting the answers and
+// deleting the checkpoint.
+it('refuses to resume when steps were recorded but the answers are gone', function (): void {
+    $targetPath = tempDir();
+    file_put_contents($targetPath.'/.kalimera-steps.json', '["AppCreate", "SailInstall"]');
+
+    (new InstallerOptionStore)->load(appName: 'demo-app', dryRun: false, targetPath: $targetPath);
+})->throws(InvalidTargetException::class);
+
+it('keeps the recorded steps when the answers are saved again', function (): void {
+    $installerOption = makeInstallerOption();
+    mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true);
+
+    $step = new readonly class implements Pipeline
+    {
+        public function label(): string
+        {
+            return 'a step';
+        }
+
+        public function execute(): void {}
+    };
+
+    $stepCheckpoint = new StepCheckpoint($installerOption->targetPath);
+    $stepCheckpoint->record($step);
+
+    (new InstallerOptionStore)->save($installerOption);
+
+    expect($stepCheckpoint->completed($step))->toBeTrue();
 });
 
 it('reads the legacy spatiePackages key from older state files', function (): void {
@@ -71,31 +105,12 @@ it('reads the legacy spatiePackages key from older state files', function (): vo
     expect($loaded?->additionalPackages)->toBe(['spatie/laravel-data']);
 });
 
-it('returns null when the state file misses required keys', function (): void {
+it('refuses to resume when the saved answers miss required keys', function (): void {
     $targetPath = tempDir();
     file_put_contents($targetPath.'/.kalimera.json', '{"starterKit": "react"}');
 
-    $loaded = (new InstallerOptionStore)->load(appName: 'demo-app', dryRun: false, targetPath: $targetPath);
-
-    expect($loaded)->toBeNull();
-});
-
-it('forgets the state file', function (): void {
-    $installerOption = makeInstallerOption();
-    mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true);
-
-    $installerOptionStore = new InstallerOptionStore;
-    $installerOptionStore->save($installerOption);
-    $installerOptionStore->forget($installerOption->targetPath);
-
-    expect(file_exists($installerOption->targetPath.'/.kalimera.json'))->toBeFalse();
-});
-
-it('forgetting a missing state file is a no-op', function (): void {
-    (new InstallerOptionStore)->forget(tempDir());
-
-    expect(true)->toBeTrue();
-});
+    (new InstallerOptionStore)->load(appName: 'demo-app', dryRun: false, targetPath: $targetPath);
+})->throws(InvalidTargetException::class);
 
 it('keeps the invocation flags out of the state file', function (): void {
     $installerOption = makeInstallerOption(['dryRun' => true]);
@@ -103,7 +118,7 @@ it('keeps the invocation flags out of the state file', function (): void {
 
     (new InstallerOptionStore)->save($installerOption);
 
-    $decoded = json_decode((string) file_get_contents($installerOption->targetPath.'/.kalimera.json'), true);
+    $decoded = json_decode((string) file_get_contents($installerOption->targetPath.'/.kalimera.json'), true)['answers'];
 
     // Both come from the current run, so a stored value could only mislead a reader.
     expect($decoded)->not->toHaveKey('dryRun')

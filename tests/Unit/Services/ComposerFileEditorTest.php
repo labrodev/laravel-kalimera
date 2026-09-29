@@ -153,3 +153,28 @@ it('throws when the composer file cannot be read', function (): void {
         restore_error_handler();
     }
 });
+
+it('allows a composer plugin beside the ones already allowed', function (): void {
+    $path = composerFixture(['config' => ['allow-plugins' => ['pestphp/pest-plugin' => true]]]);
+
+    $composer = new ComposerFileEditor($path);
+    $composer->allowPlugin('laravel/vet');
+    $composer->save();
+
+    expect(decodedComposer($path))->toBe([
+        'config' => ['allow-plugins' => ['pestphp/pest-plugin' => true, 'laravel/vet' => true]],
+    ]);
+});
+
+it('creates the allow-plugins list when the manifest has no config section', function (): void {
+    $path = composerFixture(['require' => ['php' => '^8.4']]);
+
+    $composer = new ComposerFileEditor($path);
+    $composer->allowPlugin('laravel/vet');
+    $composer->save();
+
+    expect(decodedComposer($path))->toBe([
+        'require' => ['php' => '^8.4'],
+        'config' => ['allow-plugins' => ['laravel/vet' => true]],
+    ]);
+});

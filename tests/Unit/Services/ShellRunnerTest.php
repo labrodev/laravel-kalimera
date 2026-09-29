@@ -216,6 +216,32 @@ it('replays the failure tail once, on the attempt that gives up', function (): v
     expect(substr_count((string) stream_get_contents($stream), 'could not resolve host'))->toBe(1);
 });
 
+it('keeps a failure the caller is expecting off the terminal', function (): void {
+    $stream = fopen('php://memory', 'r+');
+
+    if ($stream === false) {
+        throw new RuntimeException('The in-memory stream the printer writes into could not be opened.');
+    }
+
+    $shellRunner = new ShellRunner(
+        commandOutputPrinter: new CommandOutputPrinter(errorStream: $stream, interactive: false, heartbeatSeconds: 3600.0),
+        dryRun: false,
+        retryDelaySeconds: 0,
+    );
+
+    try {
+        $shellRunner->runCommand(command: ['bash', '-c', 'echo "found 5 errors" >&2; exit 1'], replayTail: false);
+    } catch (CommandFailedException) {
+        // Expected — this caller wants the exit code, not the report.
+    }
+
+    rewind($stream);
+
+    // PHPStan failing on a fresh skeleton is the cue to write a baseline, not a broken
+    // run, and replaying its report would present a planned step as a fault.
+    expect((string) stream_get_contents($stream))->not->toContain('found 5 errors');
+});
+
 it('treats a quiet command that outruns its timeout as a failure, not an error', function (): void {
     $shellRunner = new ShellRunner(dryRun: false, quietTimeoutSeconds: 0.2);
 

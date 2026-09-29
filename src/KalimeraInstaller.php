@@ -8,32 +8,14 @@ use Kalimera\Contracts\Pipeline;
 use Kalimera\Contracts\PortChecker;
 use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Payloads\Argument;
-use Kalimera\Payloads\InstallerConfig;
 use Kalimera\Payloads\InstallerOption;
-use Kalimera\Pipelines\AdditionalPackagesInstall;
-use Kalimera\Pipelines\AgentGuardConfigure;
-use Kalimera\Pipelines\AppCreate;
-use Kalimera\Pipelines\AppFinalize;
-use Kalimera\Pipelines\AroundPackagesInstall;
-use Kalimera\Pipelines\BoostInstall;
-use Kalimera\Pipelines\CoreStructureScaffold;
-use Kalimera\Pipelines\ExtraPackagesInstall;
-use Kalimera\Pipelines\InertiaInstall;
-use Kalimera\Pipelines\PhpConstraintApply;
-use Kalimera\Pipelines\PostmarkInstall;
 use Kalimera\Pipelines\PreflightCheck;
-use Kalimera\Pipelines\QualityToolsInstall;
-use Kalimera\Pipelines\SailInstall;
-use Kalimera\Pipelines\SailPortsConfigure;
-use Kalimera\Pipelines\SailRuntimeConfigure;
 use Kalimera\Pipelines\SailStart;
 use Kalimera\Services\CommandOutputPrinter;
-use Kalimera\Services\ComposerManifestGuard;
 use Kalimera\Services\ConfigLoader;
 use Kalimera\Services\NetworkPortChecker;
 use Kalimera\Services\OptionCollector;
 use Kalimera\Services\RunLock;
-use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Services\ShellRunner;
 use Kalimera\Services\StepCheckpoint;
 use Kalimera\Services\TranscriptLogger;
@@ -130,7 +112,10 @@ readonly class KalimeraInstaller
             );
 
             $runLock = new RunLock;
-            $runLock->acquire($installerOption->targetPath);
+            $runLock->acquire(
+                fresh: ! $installerOption->resume && ! $installerOption->dryRun,
+                targetPath: $installerOption->targetPath,
+            );
 
             if ($argument->logPath === '') {
                 $transcriptLogger?->useFile($installerOption->targetPath.'/'.self::TRANSCRIPT_FILE);
@@ -144,7 +129,7 @@ readonly class KalimeraInstaller
                 return 0;
             }
 
-            $steps = $this->steps(
+            $steps = new InstallPlan($this->portChecker)->steps(
                 installerConfig: $installerConfig,
                 installerOption: $installerOption,
                 processRunner: $processRunner,
@@ -201,67 +186,6 @@ readonly class KalimeraInstaller
         }
 
         return $stepCheckpoint->completed($step);
-    }
-
-    /**
-     * @return list<Pipeline>
-     */
-    private function steps(InstallerConfig $installerConfig, InstallerOption $installerOption, ProcessRunner $processRunner, ?string $transcriptFile = null): array
-    {
-        $sailCommandBuilder = new SailCommandBuilder(appPath: $installerOption->targetPath);
-
-        $processRunner = new ComposerManifestGuard(
-            processRunner: $processRunner,
-            sailCommandBuilder: $sailCommandBuilder,
-            targetPath: $installerOption->targetPath,
-        );
-
-        $steps = [
-            new AppCreate(installerOption: $installerOption, processRunner: $processRunner, transcriptFile: $transcriptFile),
-            new SailInstall(installerOption: $installerOption, processRunner: $processRunner),
-            new SailRuntimeConfigure(installerOption: $installerOption, processRunner: $processRunner),
-            new SailPortsConfigure(installerOption: $installerOption, portChecker: $this->portChecker, processRunner: $processRunner),
-            new SailStart(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder),
-            new PhpConstraintApply(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder),
-        ];
-
-        if ($installerOption->aroundPackages !== []) {
-            $steps[] = new AroundPackagesInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->qualityTools !== []) {
-            $steps[] = new QualityToolsInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->additionalPackages !== []) {
-            $steps[] = new AdditionalPackagesInstall(catalog: $installerConfig->additionalPackages, installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->installBoost) {
-            $steps[] = new BoostInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->installPostmark) {
-            $steps[] = new PostmarkInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->installInertia) {
-            $steps[] = new InertiaInstall(processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->coreNamespace !== null) {
-            $steps[] = new CoreStructureScaffold(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->extraPackages !== [] || $installerOption->extraDevPackages !== []) {
-            $steps[] = new ExtraPackagesInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        $steps[] = new AgentGuardConfigure(installerOption: $installerOption, processRunner: $processRunner);
-
-        $steps[] = new AppFinalize(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-
-        return $steps;
     }
 
     /**

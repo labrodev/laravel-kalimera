@@ -44,10 +44,10 @@ readonly class ComposerManifestGuard implements ProcessRunner
     /**
      * @param  list<string>  $command
      */
-    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1): void
+    public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1, bool $replayTail = true): void
     {
         if (! in_array('composer', $command, true)) {
-            $this->processRunner->runCommand(attempts: $attempts, command: $command, cwd: $cwd, timeout: $timeout);
+            $this->processRunner->runCommand(attempts: $attempts, command: $command, cwd: $cwd, replayTail: $replayTail, timeout: $timeout);
 
             return;
         }
@@ -63,9 +63,14 @@ readonly class ComposerManifestGuard implements ProcessRunner
 
         for ($attempt = 1; $attempt <= $allowedAttempts; $attempt++) {
             try {
+                // This guard runs its own retry loop, so the inner runner is always on
+                // its single attempt and would replay a tail for every failure the loop
+                // goes on to recover from. Only the attempt with nothing left after it
+                // has a failure worth putting on the terminal.
                 $this->processRunner->runCommand(
                     command: $attempt === 1 ? $command : $this->serialized($command),
                     cwd: $cwd,
+                    replayTail: $replayTail && $attempt === $allowedAttempts,
                     timeout: $timeout,
                 );
 
@@ -132,7 +137,7 @@ readonly class ComposerManifestGuard implements ProcessRunner
         warning(sprintf(
             'composer.json was %s before this command — restored it, and kept what was there as %s.',
             $current === null ? 'gone' : 'not the application manifest any more',
-            basename($this->damagedPath()),
+            $this->damagedPath(),
         ));
     }
 
@@ -150,10 +155,16 @@ readonly class ComposerManifestGuard implements ProcessRunner
         }
     }
 
+    /**
+     * Kept in the run state file inside the application rather than anywhere global: it
+     * describes this application's manifest for this run, so it has to go when the run
+     * completes. A copy that outlived its application would be restored into the next one
+     * scaffolded at the same path.
+     */
     private function remember(string $contents): void
     {
         try {
-            (new FileWriter)(contents: $contents, path: $this->rememberedPath());
+            new RunStateFile($this->targetPath)->saveComposerSnapshot($contents);
         } catch (Throwable) {
             // The copy is a safety net; the run is no worse off than before without it.
         }
@@ -161,14 +172,13 @@ readonly class ComposerManifestGuard implements ProcessRunner
 
     private function rememberedManifest(): ?string
     {
-        return $this->read($this->rememberedPath());
+        return new RunStateFile($this->targetPath)->composerSnapshot();
     }
 
-    private function rememberedPath(): string
-    {
-        return sys_get_temp_dir().'/kalimera-manifest-'.md5($this->targetPath).'.json';
-    }
-
+    /**
+     * Evidence rather than state, so it lives outside the application — the run may yet
+     * succeed and clear its state, and this is the one file that says what went wrong.
+     */
     private function damagedPath(): string
     {
         return sys_get_temp_dir().'/kalimera-manifest-'.md5($this->targetPath).'.damaged.json';
@@ -212,9 +222,13 @@ readonly class ComposerManifestGuard implements ProcessRunner
     private function recover(array $command): void
     {
         try {
+            // A recovery that does not work changes nothing about what happens next — the
+            // original command is retried either way — so its output is not the failure
+            // the reader needs to see.
             $this->processRunner->runCommand(
                 command: $this->serialized($command),
                 cwd: $this->sailCommandBuilder->path(),
+                replayTail: false,
             );
         } catch (Throwable) {
             warning('Recovering vendor/ failed — retrying the original command anyway.');

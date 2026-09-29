@@ -26,20 +26,21 @@ readonly class PostmarkInstall implements Pipeline
 
     public function label(): string
     {
-        return 'Setting up the Postmark SDK';
+        return 'Setting up Postmark mail delivery';
     }
 
     public function execute(): void
     {
         $this->processRunner->runCommand(
             attempts: ProcessRunner::NETWORK_ATTEMPTS,
-            // -W is load-bearing, not defensive. Laravel 13 allows guzzle ^7.8.2 || ^8.0, so a
-            // fresh app locks the newest — 8.x — while the Postmark SDK still caps at ^7.8.
-            // Without it composer refuses to touch a package the partial update did not name
-            // and the require dies on an unsatisfiable guzzle. Letting it move guzzle back to
-            // 7.x costs nothing: the framework supports that range just as fully, and nothing
-            // else in the scaffold asks for 8.
-            command: $this->sailCommandBuilder->composer('require', '-W', 'wildbit/postmark-php'),
+            // config/mail.php ships a 'postmark' transport and this is the package backing
+            // it: Laravel reaches Postmark through symfony/mailer, never through Postmark's
+            // own HTTP SDK. That SDK is the wrong dependency twice over — nothing in the
+            // scaffold calls an API client, and it caps guzzle at ^7.8 against Laravel 13's
+            // 8.x, so requiring it walks guzzle, psr7 and promises back a major version each
+            // and drops symfony/polyfill-php82 on the way out. Rewriting six packages of the
+            // framework's HTTP stack is what made this step fail on its own -W every run.
+            command: $this->sailCommandBuilder->composer('require', 'symfony/postmark-mailer'),
             cwd: $this->sailCommandBuilder->path(),
         );
 

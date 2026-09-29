@@ -32,7 +32,7 @@ it('resumes with the saved answers instead of prompting again', function (): voi
 // must not inherit a resumed run's promise to leave the previous project's containers
 // and volumes alone — SailStart reads this flag to decide exactly that.
 it('does not count as a resume when the application directory is gone', function (): void {
-    $targetPath = sys_get_temp_dir().'/kalimera-never-created-'.bin2hex(random_bytes(4));
+    $targetPath = realpath(sys_get_temp_dir()).'/kalimera-never-created-'.bin2hex(random_bytes(4));
 
     $collected = (new OptionCollector)(
         dryRun: false,
