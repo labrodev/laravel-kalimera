@@ -72,9 +72,9 @@ readonly class AppFinalize implements Pipeline
                 throw $throwable;
             }
 
-            // An interrupted scaffold leaves schema behind that blocks migrate, and
-            // orphaned sequences survive even `db:wipe`. The application has never run at
-            // this point, so recreating the volume is both safe and engine-agnostic.
+            // An interrupted scaffold can leave schema behind that blocks migrate. The
+            // application has never run at this point, so recreating the volume is both
+            // safe and engine-agnostic.
             $reason = match ($this->classify($throwable)) {
                 MigrationFailure::SchemaConflict => 'Migrations hit schema left over from an earlier run — recreating the database volume.',
                 MigrationFailure::Unavailable => 'The database never became reachable — recreating its volume and migrating again.',
@@ -201,17 +201,6 @@ readonly class AppFinalize implements Pipeline
         );
     }
 
-    /**
-     * Rector drops a cache shard with a check-then-act — it confirms the directory is
-     * empty and only then removes it — so a second process that empties the same shard in
-     * between leaves the first to fail the whole run on an rmdir returning ENOENT. Only a
-     * file whose hash no longer matches the cache reaches that removal, and a pass that
-     * rewrites the codebase is precisely what makes every hash stale, which is why the
-     * second convergence pass is where it surfaces.
-     *
-     * Starting from an empty cache keeps the removal out of the run entirely: with nothing
-     * on disk to drop, the cleanup returns before it ever reaches the directory.
-     */
     private function refactor(): void
     {
         $this->softRun(
@@ -221,9 +210,9 @@ readonly class AppFinalize implements Pipeline
     }
 
     /**
-     * For the rector runs this pipeline does not issue itself, and so cannot hand
-     * --clear-cache to. Best-effort on purpose: a cache that could not be cleared costs
-     * the run nothing but the risk of the race above.
+     * For the rector run this pipeline does not issue itself: `composer quality` runs
+     * rector:dry over code pint has just reformatted, and a cache full of stale hashes would
+     * only slow it down. Best-effort on purpose.
      */
     private function clearRectorCache(): void
     {

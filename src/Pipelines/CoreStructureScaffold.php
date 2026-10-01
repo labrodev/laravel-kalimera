@@ -9,7 +9,6 @@ use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Services\ComposerFileEditor;
 use Kalimera\Services\FileWriter;
-use Kalimera\Services\SailCommandBuilder;
 
 readonly class CoreStructureScaffold implements Pipeline
 {
@@ -18,7 +17,6 @@ readonly class CoreStructureScaffold implements Pipeline
     public function __construct(
         private InstallerOption $installerOption,
         private ProcessRunner $processRunner,
-        private SailCommandBuilder $sailCommandBuilder,
     ) {}
 
     public function label(): string
@@ -51,8 +49,6 @@ readonly class CoreStructureScaffold implements Pipeline
             },
             description: 'map the '.$this->namespace().'\\ namespace to src/ in composer.json',
         );
-
-        $this->processRunner->runCommand(command: $this->sailCommandBuilder->composer('dump-autoload'), cwd: $this->sailCommandBuilder->path());
     }
 
     private function namespace(): string

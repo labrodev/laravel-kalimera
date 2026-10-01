@@ -10,7 +10,7 @@ Every `preselected` key at its built-in value, plus the built-in Spatie catalog 
     "preselected": {
         "starterKit": "react",
         "installInertia": false,
-        "aroundPackages": ["horizon", "fortify", "ai", "nightwatch"],
+        "aroundPackages": ["horizon", "fortify", "ai", "scout", "nightwatch"],
         "sailServices": ["pgsql", "redis"],
         "phpConstraint": "^8.5",
         "qualityTools": ["pint", "phpstan", "rector", "vet"],
@@ -73,25 +73,27 @@ Catalog entry fields: `package` (required, version constraint like `vendor/pkg:^
 
 Step numbers shift when conditional steps are skipped — match progress and failures by LABEL, not number.
 
+Everything up to "Guarding destructive commands" runs on the host with no container; composer runs there as the only writer of composer.json. From "Building and starting the Sail containers" on, everything that executes PHP runs in the container.
+
 | Label | Runs when | What it does |
 |-------|-----------|--------------|
-| Checking requirements | Always, before the numbered steps | `php`, `composer`, `laravel`, `docker`, `git` on PATH; `docker info` answers (warning only under `--dry-run`) |
+| Checking requirements | Always, before the numbered steps | `php`, `composer`, `laravel`, `docker`, `git` on PATH; PHP 8.3+ and Composer 2.2+ on the host (warning only under `--dry-run`); `docker info` answers (warning only under `--dry-run`) |
 | Creating the Laravel application | Always | `laravel new <name> --pest --git --no-boost --no-interaction [--react\|--vue\|--livewire\|--svelte]`; writes the answers to `.kalimera.json` and gitignores it |
-| Installing Laravel Sail | Always | `artisan sail:install --with=<services\|none>`; removes the leftover sqlite db; syncs `DB_*` into `.env.example` |
-| Matching the Sail runtime to PHP X.Y | Always | Pins the compose file to the chosen PHP minor |
-| Resolving host port conflicts | Always | Probes `APP_PORT`, `VITE_PORT`, `FORWARD_*` and writes the next free ports into `.env` |
+| Installing Laravel Sail | Always | `artisan sail:install --with=<services\|none>` with Docker hidden from it (`DOCKER_HOST` pointed at nothing), so it only writes the compose file and `.env` instead of pulling and building early; `--php=<minor>` pins the runtime (left out, with a warning, when Sail ships no runtime for that version); removes the leftover sqlite db; syncs `DB_*` into `.env.example` |
+| Restricting PHP to `<constraint>` | Always | Host edit of composer.json: `require.php` = the constraint, `config.platform.php` = the container's exact PHP from the local Sail image, else the bare minor (so the host's composer resolves for the container's PHP, whatever the host runs; it errs low on purpose). The pin stays in the finished app |
+| Setting up static analysis tools | `pint`, `phpstan` or `rector` selected | Published configs (pint.json, phpstan.neon.dist, rector.php), ide-helper gitignore entries, composer scripts. Packages come in "Downloading packages" |
+| Preparing the dependency audit | `vet` selected | Allows the `laravel/vet` plugin in composer.json, adds the `vet` script and `@vet` to `quality`. Skipped with a warning when the PHP constraint is below 8.4 |
+| Setting up Postmark mail delivery | `installPostmark: true` | `postmark:push` / `postmark:pull` scripts; `POSTMARK_API_KEY` env placeholder |
+| Scaffolding the `<Namespace>` src/ structure | `coreNamespace` not null | `src/{Domain,Shared,Support,Feature,Infrastructure}` + PSR-4 map |
+| Downloading packages | Always | **Host** `composer require … --no-scripts --no-plugins --ignore-platform-req=ext-*`: one batch for runtime packages (Horizon, Fortify, Laravel AI, Scout, Postmark mailer, Inertia, catalog entries), one `--dev` batch (quality tools, Boost, Vet, dev catalog entries), then Nightwatch and each extra package on its own (warn on failure). Retries only network failures. Packages composer.json already requires are skipped |
+| Guarding destructive commands against AI agents | Always | Publishes `AgentGuardServiceProvider`, registers it in `bootstrap/providers.php` |
+| Resolving host port conflicts | Always | Probes `APP_PORT`, `VITE_PORT`, `FORWARD_*` and writes the next free ports into `.env`. Runs right before `sail up`, so nothing can take a port in between |
 | Building and starting the Sail containers | Always, including on `--continue` | On a fresh run, pins a per-path `COMPOSE_PROJECT_NAME` (`<app>-<hash>`) in `.env`, then removes an inherited compose project first (`down -v`) if containers/volumes already answer to it — only an earlier run in this same directory can — warning with exactly what it removes. Skips when nothing does. Then `sail up -d --wait`; on failure removes leftover containers/network, stops with the port and `.env` key if another program holds one, otherwise retries |
-| Restricting PHP to `<constraint>` | Always | `sail composer require php:<constraint> --no-update` |
-| Installing Laravel ecosystem packages | `aroundPackages` not empty | Horizon (+ `horizon:install`), Fortify (skipped when the kit ships it), Laravel AI, Nightwatch (last two warn on failure) |
-| Setting up static analysis tools | `pint`, `phpstan` or `rector` selected | Pint, Larastan, IDE Helper, Rector + published configs, empty PHPStan baseline, composer scripts |
-| Installing additional packages | Any catalog entry selected | Batched `composer require` (+ `--dev` batch), then `vendor:publish` per entry |
-| Installing Laravel Boost | `installBoost` is not false | Writes `boost.json` with the chosen agents; `boost:install --guidelines --skills --mcp --no-interaction`; `boost:add-skill <repo> --all` per repo (warns on failure); `boost:update --no-discover --no-interaction` to refresh guidelines and skills (warns on failure) |
-| Setting up the Postmark SDK | `installPostmark: true` | `wildbit/postmark-php`; `postmark:push` / `postmark:pull` scripts; `POSTMARK_API_KEY` env placeholder |
-| Installing Inertia | `starterKit: none` + `installInertia: true` | `inertiajs/inertia-laravel` + middleware; wiring stays manual |
-| Scaffolding the `<Namespace>` src/ structure | `coreNamespace` not null | `src/{Domain,Shared,Support,Feature,Infrastructure}` + PSR-4 map + dump-autoload |
-| Installing extra packages | `extraPackages` / `extraDevPackages` set | One `composer require` per package (warns on failure) |
-| Recording the dependency audit trust file | `vet` selected | Last step that touches composer, so the trust file describes the finished `vendor/`. Allows the plugin in composer.json (before the require — composer aborts on an unlisted plugin), requires `laravel/vet --dev`, `vet --init` to record every installed package, adds the `vet` script and `@vet` to `quality`. No release-age floor. Skipped with a warning when the PHP constraint is below 8.4 |
-| Guarding destructive commands against AI agents | Always | Publishes `AgentGuardServiceProvider`, registers it last in `bootstrap/providers.php` |
+| Installing dependencies in the container | Always | `vet --init` (when vet is selected; warns on failure) to record the finished `vendor/` as the trust baseline, then `sail composer install`: checks the PHP extensions the host skipped, runs the plugins, and runs `package:discover`; then `vendor:publish --tag=laravel-assets --force` |
+| Setting up the Laravel ecosystem packages | `horizon`, `fortify`, `ai` or `scout` selected | `horizon:install` (+ providers repair), `fortify:install` (skipped when the kit ships it), Laravel AI `vendor:publish --provider` (config, conversations migration, `make:agent` stubs), Scout config + `SCOUT_DRIVER=database` (`collection` without PostgreSQL/MySQL) in `.env` and `.env.example` |
+| Publishing additional package configuration | Any catalog entry selected | `vendor:publish --provider=…` per entry's `publishProviders` |
+| Installing Laravel Boost | `installBoost` is not false | Writes `boost.json` with the chosen agents; `boost:install --guidelines --skills --mcp --no-interaction`; `boost:add-skill <repo> --all` per repo (warns on failure); `boost:update --no-discover --no-interaction` (warns on failure) |
+| Installing Inertia | `starterKit: none` + `installInertia: true` | `inertia:middleware`; wiring stays manual |
 | Finalizing the application | Always | Migrate (retried only while the database is unreachable; leftover schema goes straight to recreating the volume; a migration the server itself refused stops on the spot, since an empty database refuses it identically), `npm install`, `ide-helper`, `rector:fix` twice, `pint:fix`, `phpstan` (auto-baseline), `composer quality`, initial git commit. `.kalimera.json` is deleted after this step, once the whole plan has finished |
 
 ## Worked session: custom scaffold
@@ -129,8 +131,10 @@ The dry run validates the config, prints the summary table, then the full plan (
  · would set APP_PORT=84 in .env (default port is busy)
  · would set FORWARD_DB_PORT=3308 in .env (default port is busy)
  ...
- ▶ Step 8/13 — Installing additional packages
- → [crm] ./vendor/bin/sail composer require spatie/laravel-data spatie/laravel-permission
+ ▶ Step 7/13 — Downloading packages
+ → [crm] composer require spatie/laravel-data spatie/laravel-permission symfony/postmark-mailer --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction
+ ...
+ ▶ Step 11/13 — Publishing additional package configuration
  → [crm] ./vendor/bin/sail artisan vendor:publish --provider=Spatie\LaravelData\LaravelDataServiceProvider --no-interaction
  ...
  ▶ Step 13/13 — Finalizing the application

@@ -27,7 +27,7 @@ function writeProvidersFile(InstallerOption $installerOption, string $contents):
     return $path;
 }
 
-it('installs horizon and leaves a healthy providers file untouched', function (): void {
+it('runs the horizon installer and leaves a healthy providers file untouched', function (): void {
     $installerOption = makeInstallerOption(['aroundPackages' => ['horizon']]);
     $processRunner = new FakeProcessRunner;
     $contents = "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n";
@@ -36,7 +36,6 @@ it('installs horizon and leaves a healthy providers file untouched', function ()
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 
     expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require laravel/horizon',
         './vendor/bin/sail artisan horizon:install',
     ])
         ->and($processRunner->commands[0]['cwd'])->toBe($installerOption->targetPath)
@@ -128,13 +127,12 @@ it('installs fortify when the starter kit does not ship it', function (): void {
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 
     expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require laravel/fortify',
         './vendor/bin/sail artisan fortify:install',
     ]);
 });
 
-// The --continue case: an earlier run required the package and then died before
-// fortify:install published anything. Reading composer.json would call that "already
+// The --continue case, and the host-first one: PackagesRequire has already put the package
+// in composer.json before this step runs, and fortify:install has not published anything. Reading composer.json would call that "already
 // shipped by the starter kit" and skip the install, so the resumed run would report
 // success over an application that has Fortify required but not installed.
 it('installs fortify when an earlier run required the package but never installed it', function (): void {
@@ -147,37 +145,105 @@ it('installs fortify when an earlier run required the package but never installe
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 
     expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require laravel/fortify',
         './vendor/bin/sail artisan fortify:install',
     ]);
 });
 
-it('continues with the remaining packages when a soft require fails', function (): void {
-    $installerOption = makeInstallerOption(['aroundPackages' => ['ai', 'nightwatch']]);
+// AgentGuardConfigure registers its provider on the host before the containers start, so
+// horizon:install runs after it. The repair rebuilds the file from the snapshot taken just
+// before the installer, which already holds the guard.
+it('keeps the agent guard provider when it repairs a corrupted providers file', function (): void {
+    $installerOption = makeInstallerOption(['aroundPackages' => ['horizon']]);
     $processRunner = new FakeProcessRunner;
-    $processRunner->failOn('laravel/ai');
+    $path = writeProvidersFile(
+        $installerOption,
+        "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n    App\\Providers\\AgentGuardServiceProvider::class,\n];\n",
+    );
+    $processRunner->onCommand('horizon:install', function () use ($path): void {
+        file_put_contents($path, "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n1::class,\n];\n");
+    });
 
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 
-    expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require laravel/ai',
-        './vendor/bin/sail composer require laravel/ai',
-        './vendor/bin/sail composer require laravel/ai',
-        './vendor/bin/sail composer require laravel/nightwatch',
-    ]);
+    expect(file_get_contents($path))->toBe(
+        "<?php\n\nreturn [\n"
+        ."    App\\Providers\\AgentGuardServiceProvider::class,\n"
+        ."    App\\Providers\\AppServiceProvider::class,\n"
+        ."    App\\Providers\\HorizonServiceProvider::class,\n"
+        ."];\n",
+    );
 });
 
-it('recovers when a package require fails once and succeeds on retry', function (): void {
-    $installerOption = makeInstallerOption(['aroundPackages' => ['horizon']]);
+it('sets up every selected package in order and requires none itself', function (): void {
+    $installerOption = makeInstallerOption(['aroundPackages' => ['horizon', 'fortify', 'ai', 'scout', 'nightwatch']]);
     $processRunner = new FakeProcessRunner;
-    $processRunner->failOn('laravel/horizon', times: 1);
     writeProvidersFile($installerOption, "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n");
 
     makeAroundPackagesInstall($installerOption, $processRunner)->execute();
 
+    // Every package is downloaded on the host by PackagesRequire; nightwatch needs no setup.
     expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require laravel/horizon',
-        './vendor/bin/sail composer require laravel/horizon',
         './vendor/bin/sail artisan horizon:install',
+        './vendor/bin/sail artisan fortify:install',
+        './vendor/bin/sail artisan vendor:publish --provider=Laravel\\Ai\\AiServiceProvider --no-interaction',
+        './vendor/bin/sail artisan vendor:publish --provider=Laravel\\Scout\\ScoutServiceProvider --no-interaction',
     ]);
+});
+
+// By provider, as the package documents: its migration carries no tag to publish it by.
+it('publishes the ai config and migrations', function (): void {
+    $installerOption = makeInstallerOption(['aroundPackages' => ['ai']]);
+    $processRunner = new FakeProcessRunner;
+
+    makeAroundPackagesInstall($installerOption, $processRunner)->execute();
+
+    expect(array_column($processRunner->commands, 'command'))->toBe([
+        ['./vendor/bin/sail', 'artisan', 'vendor:publish', '--provider=Laravel\\Ai\\AiServiceProvider', '--no-interaction'],
+    ])
+        ->and($processRunner->commands[0]['cwd'])->toBe($installerOption->targetPath)
+        ->and($processRunner->fileActions)->toBe([]);
+});
+
+function writeEnvFiles(InstallerOption $installerOption): void
+{
+    mkdir(directory: $installerOption->targetPath, permissions: 0755, recursive: true);
+    file_put_contents($installerOption->targetPath.'/.env', "APP_NAME=demo\n");
+    file_put_contents($installerOption->targetPath.'/.env.example', "APP_NAME=demo\n");
+}
+
+it('publishes the scout config and sets the driver in both env files', function (array $sailServices, string $driver): void {
+    $installerOption = makeInstallerOption(['aroundPackages' => ['scout'], 'sailServices' => $sailServices]);
+    $processRunner = new FakeProcessRunner;
+    writeEnvFiles($installerOption);
+
+    makeAroundPackagesInstall($installerOption, $processRunner)->execute();
+
+    expect(array_column($processRunner->commands, 'command'))->toBe([
+        ['./vendor/bin/sail', 'artisan', 'vendor:publish', '--provider=Laravel\\Scout\\ScoutServiceProvider', '--no-interaction'],
+    ])
+        ->and($processRunner->fileActions)->toBe(['set SCOUT_DRIVER='.$driver.' in .env and .env.example'])
+        ->and(file_get_contents($installerOption->targetPath.'/.env'))->toContain('SCOUT_DRIVER='.$driver)
+        ->and(file_get_contents($installerOption->targetPath.'/.env.example'))->toContain('SCOUT_DRIVER='.$driver);
+})->with([
+    // Full-text queries against the application's own tables, with nothing else to run.
+    'pgsql' => [['pgsql', 'redis'], 'database'],
+    'mysql' => [['mysql'], 'database'],
+    // Without a database server the collection engine is all there is.
+    'no database server' => [['redis'], 'collection'],
+]);
+
+it('leaves the env files alone during a dry run', function (): void {
+    $installerOption = makeInstallerOption(['aroundPackages' => ['scout']]);
+    $processRunner = new FakeProcessRunner(dryRun: true);
+    writeEnvFiles($installerOption);
+
+    makeAroundPackagesInstall($installerOption, $processRunner)->execute();
+
+    expect($processRunner->fileActions)->toBe(['set SCOUT_DRIVER=database in .env and .env.example'])
+        ->and(file_get_contents($installerOption->targetPath.'/.env'))->not->toContain('SCOUT_DRIVER');
+});
+
+it('names what it does', function (): void {
+    expect(makeAroundPackagesInstall(makeInstallerOption(), new FakeProcessRunner)->label())
+        ->toBe('Setting up the Laravel ecosystem packages');
 });

@@ -8,13 +8,12 @@ use Kalimera\Contracts\Pipeline;
 use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Exceptions\ProvidersRepairFailedException;
 use Kalimera\Payloads\InstallerOption;
+use Kalimera\Services\EnvFileWriter;
 use Kalimera\Services\FileWriter;
 use Kalimera\Services\SailCommandBuilder;
 
 use function Laravel\Prompts\info;
 use function Laravel\Prompts\warning;
-
-use Throwable;
 
 readonly class AroundPackagesInstall implements Pipeline
 {
@@ -26,7 +25,7 @@ readonly class AroundPackagesInstall implements Pipeline
 
     public function label(): string
     {
-        return 'Installing Laravel ecosystem packages';
+        return 'Setting up the Laravel ecosystem packages';
     }
 
     public function execute(): void
@@ -34,7 +33,6 @@ readonly class AroundPackagesInstall implements Pipeline
         if ($this->installerOption->wantsHorizon()) {
             $providersBefore = $this->currentProviders();
 
-            $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->composer('require', 'laravel/horizon'), cwd: $this->sailCommandBuilder->path());
             $this->processRunner->runCommand(command: $this->sailCommandBuilder->artisan('horizon:install'), cwd: $this->sailCommandBuilder->path());
 
             $this->repairProvidersFile(expected: [...$providersBefore, 'App\\Providers\\HorizonServiceProvider']);
@@ -43,19 +41,50 @@ readonly class AroundPackagesInstall implements Pipeline
         if (in_array('fortify', $this->installerOption->aroundPackages, true) && ! $this->fortifyAlreadyInstalled()) {
             $providersBefore = $this->currentProviders();
 
-            $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->composer('require', 'laravel/fortify'), cwd: $this->sailCommandBuilder->path());
             $this->processRunner->runCommand(command: $this->sailCommandBuilder->artisan('fortify:install'), cwd: $this->sailCommandBuilder->path());
 
             $this->repairProvidersFile(expected: [...$providersBefore, 'App\\Providers\\FortifyServiceProvider']);
         }
 
-        if (in_array('ai', $this->installerOption->aroundPackages, true)) {
-            $this->softRequire('laravel/ai');
+        if ($this->installerOption->wantsAroundPackage('ai')) {
+            // By provider, as Laravel AI's install instructions have it: the conversations
+            // migration is registered under the provider alone, with no tag to ask for it
+            // by, so a tag-filtered publish copies the config and silently skips the table.
+            $this->processRunner->runCommand(
+                command: $this->sailCommandBuilder->artisan('vendor:publish', '--provider=Laravel\\Ai\\AiServiceProvider', '--no-interaction'),
+                cwd: $this->sailCommandBuilder->path(),
+            );
         }
 
-        if (in_array('nightwatch', $this->installerOption->aroundPackages, true)) {
-            $this->softRequire('laravel/nightwatch');
+        if ($this->installerOption->wantsAroundPackage('scout')) {
+            $this->processRunner->runCommand(
+                command: $this->sailCommandBuilder->artisan('vendor:publish', '--provider=Laravel\\Scout\\ScoutServiceProvider', '--no-interaction'),
+                cwd: $this->sailCommandBuilder->path(),
+            );
+
+            $this->configureScoutDriver();
         }
+    }
+
+    /**
+     * Scout's own default is the collection engine, which loads every candidate row and
+     * filters it in PHP — fine for tests, not for real data. With PostgreSQL or MySQL the
+     * database engine searches the application's own tables with full-text queries, so search
+     * works on day one with nothing else to run; moving to Meilisearch or Typesense later is
+     * one .env line. Without either database the collection engine is all there is.
+     */
+    private function configureScoutDriver(): void
+    {
+        $driver = $this->installerOption->usesDatabaseService() ? 'database' : 'collection';
+
+        $this->processRunner->applyFileChange(
+            action: function () use ($driver): void {
+                foreach (['.env', '.env.example'] as $file) {
+                    new EnvFileWriter($this->installerOption->targetPath.'/'.$file)(key: 'SCOUT_DRIVER', value: $driver);
+                }
+            },
+            description: 'set SCOUT_DRIVER='.$driver.' in .env and .env.example',
+        );
     }
 
     /**
@@ -132,15 +161,6 @@ readonly class AroundPackagesInstall implements Pipeline
 
         if (! $this->processRunner->probe(command: ['php', '-l', $path])) {
             throw ProvidersRepairFailedException::make($path);
-        }
-    }
-
-    private function softRequire(string $package): void
-    {
-        try {
-            $this->processRunner->runCommand(attempts: ProcessRunner::NETWORK_ATTEMPTS, command: $this->sailCommandBuilder->composer('require', $package), cwd: $this->sailCommandBuilder->path());
-        } catch (Throwable $exception) {
-            warning(sprintf('%s could not be installed — skipping it. %s', $package, $exception->getMessage()));
         }
     }
 }

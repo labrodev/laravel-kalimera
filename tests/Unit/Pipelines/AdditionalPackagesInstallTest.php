@@ -22,7 +22,7 @@ function makeAdditionalPackagesInstall(array $catalog, InstallerOption $installe
     );
 }
 
-it('requires the selected packages and publishes their providers', function (): void {
+it('publishes the providers of the selected packages', function (): void {
     $installerOption = makeInstallerOption([
         'additionalPackages' => ['spatie/laravel-data', 'spatie/laravel-permission'],
     ]);
@@ -34,39 +34,32 @@ it('requires the selected packages and publishes their providers', function (): 
         $processRunner,
     )->execute();
 
+    // The packages themselves are downloaded on the host by PackagesRequire.
     expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require spatie/laravel-data spatie/laravel-permission',
         './vendor/bin/sail artisan vendor:publish --provider=Spatie\LaravelData\LaravelDataServiceProvider --no-interaction',
         './vendor/bin/sail artisan vendor:publish --provider=Spatie\Permission\PermissionServiceProvider --no-interaction',
     ])
         ->and($processRunner->commands[0]['cwd'])->toBe($installerOption->targetPath);
 });
 
-it('splits dev packages into a separate require --dev command', function (): void {
+it('publishes nothing for packages without providers', function (): void {
     $catalog = [
         new AdditionalPackage(label: 'medialibrary', package: 'spatie/laravel-medialibrary'),
         new AdditionalPackage(dev: true, label: 'debugbar', package: 'barryvdh/laravel-debugbar'),
     ];
     $installerOption = makeInstallerOption([
-        'additionalPackages' => ['spatie/laravel-medialibrary', 'barryvdh/laravel-debugbar'],
+        'additionalPackages' => ['spatie/laravel-medialibrary', 'barryvdh/laravel-debugbar', 'vendor/forgotten'],
     ]);
     $processRunner = new FakeProcessRunner;
 
     makeAdditionalPackagesInstall($catalog, $installerOption, $processRunner)->execute();
 
-    expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require spatie/laravel-medialibrary',
-        './vendor/bin/sail composer require --dev barryvdh/laravel-debugbar',
-    ]);
+    expect($processRunner->commands)->toBe([]);
 });
 
-it('installs a selected package missing from the catalog as a plain dependency', function (): void {
-    $installerOption = makeInstallerOption(['additionalPackages' => ['vendor/forgotten']]);
-    $processRunner = new FakeProcessRunner;
+it('names what it does now that it no longer installs anything', function (): void {
+    $installerOption = makeInstallerOption();
 
-    makeAdditionalPackagesInstall([], $installerOption, $processRunner)->execute();
-
-    expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require vendor/forgotten',
-    ]);
+    expect(makeAdditionalPackagesInstall([], $installerOption, new FakeProcessRunner)->label())
+        ->toBe('Publishing additional package configuration');
 });

@@ -21,10 +21,12 @@ it('produces the full default dry-run command sequence', function (): void {
         // with an empty list here would just mean the steps never got that far.
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->skippedQuietCommands))->toBe([
             ['./vendor/bin/sail', 'down', '-v'],
-            ['docker', 'compose', 'exec', '-T', '-u', 'root', 'laravel.test', 'chown', '-R', 'sail', '/home/sail'],
             ['./vendor/bin/sail', 'rm', '-rf', '/tmp/rector_cached_files'],
         ])
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->probeCommands))->toBe([
+            // The host's PHP and Composer versions, as `php -r` scripts whose exit code answers.
+            ['php', '-r', 'exit(version_compare(PHP_VERSION, "8.3.0", ">=") ? 0 : 1);'],
+            ['php', '-r', 'preg_match("/(\\d+\\.\\d+\\.\\d+)/", (string) shell_exec("composer --version --no-ansi 2>/dev/null"), $m); exit(isset($m[1]) && version_compare($m[1], "2.2.0", ">=") ? 0 : 1);'],
             ['docker', 'info'],
             ['docker', 'container', 'inspect', $project.'-laravel.test-1'],
             ['docker', 'container', 'inspect', $project.'-pgsql-1'],
@@ -32,24 +34,29 @@ it('produces the full default dry-run command sequence', function (): void {
             ['docker', 'volume', 'inspect', $project.'_sail-pgsql'],
             ['docker', 'volume', 'inspect', $project.'_sail-redis'],
         ])
+        // A question too: the local Sail image's exact PHP, which a rehearsal asks as well. The
+        // fake has no image to answer, so the pin below stays at the bare minor.
+        ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->askCommands))->toBe([
+            ['docker', 'run', '--rm', '--pull=never', '--entrypoint', 'php', 'sail-8.5/app', '-r', 'echo PHP_VERSION;'],
+        ])
         ->and(array_map(fn (array $entry): array => $entry['command'], $processRunner->commands))->toBe([
             ['laravel', 'new', 'demo-app', '--pest', '--git', '--no-boost', '--no-interaction', '--react'],
-            ['php', 'artisan', 'sail:install', '--with=pgsql,redis', '--no-interaction'],
+            ['env', 'DOCKER_HOST=unix:///nonexistent/kalimera.sock', 'php', 'artisan', 'sail:install', '--with=pgsql,redis', '--php=8.5', '--no-interaction'],
+            // Host phase: every download, before any container exists.
+            ['composer', 'require', '--no-scripts', '--no-plugins', '--ignore-platform-req=ext-*', '--no-interaction', '--', 'laravel/horizon', 'laravel/fortify', 'laravel/ai', 'laravel/scout'],
+            ['composer', 'require', '--dev', '--no-scripts', '--no-plugins', '--ignore-platform-req=ext-*', '--no-interaction', '--', 'laravel/pint', 'larastan/larastan', 'barryvdh/laravel-ide-helper', 'rector/rector', 'driftingly/rector-laravel', 'laravel/boost', 'laravel/vet'],
+            ['composer', 'require', '--no-scripts', '--no-plugins', '--ignore-platform-req=ext-*', '--no-interaction', '--', 'laravel/nightwatch'],
+            // Container phase: everything that executes application or package code.
             ['./vendor/bin/sail', 'up', '-d', '--wait'],
-            ['./vendor/bin/sail', 'composer', 'require', 'php:^8.5', '--no-update', '--no-interaction'],
-            ['./vendor/bin/sail', 'composer', 'require', 'laravel/horizon'],
+            ['./vendor/bin/sail', 'php', 'vendor/bin/vet', '--init', '--no-interaction'],
+            ['./vendor/bin/sail', 'composer', 'install', '--no-interaction'],
+            ['./vendor/bin/sail', 'artisan', 'vendor:publish', '--tag=laravel-assets', '--force', '--no-interaction'],
             ['./vendor/bin/sail', 'artisan', 'horizon:install'],
-            ['./vendor/bin/sail', 'composer', 'require', 'laravel/fortify'],
             ['./vendor/bin/sail', 'artisan', 'fortify:install'],
-            ['./vendor/bin/sail', 'composer', 'require', 'laravel/ai'],
-            ['./vendor/bin/sail', 'composer', 'require', 'laravel/nightwatch'],
-            ['./vendor/bin/sail', 'composer', 'require', '--dev', 'laravel/pint', 'larastan/larastan', 'barryvdh/laravel-ide-helper', 'rector/rector', 'driftingly/rector-laravel'],
-            ['./vendor/bin/sail', 'composer', 'require', 'laravel/boost', '--dev'],
+            ['./vendor/bin/sail', 'artisan', 'vendor:publish', '--provider=Laravel\\Ai\\AiServiceProvider', '--no-interaction'],
+            ['./vendor/bin/sail', 'artisan', 'vendor:publish', '--provider=Laravel\\Scout\\ScoutServiceProvider', '--no-interaction'],
             ['./vendor/bin/sail', 'artisan', 'boost:install', '--guidelines', '--skills', '--mcp', '--no-interaction'],
             ['./vendor/bin/sail', 'artisan', 'boost:update', '--no-discover', '--no-interaction'],
-            ['./vendor/bin/sail', 'composer', 'dump-autoload'],
-            ['./vendor/bin/sail', 'composer', 'require', 'laravel/vet', '--dev'],
-            ['./vendor/bin/sail', 'php', 'vendor/bin/vet', '--init', '--no-interaction'],
             ['./vendor/bin/sail', 'artisan', 'migrate', '--no-interaction'],
             ['./vendor/bin/sail', 'npm', 'install'],
             ['./vendor/bin/sail', 'composer', 'ide-helper'],
@@ -67,20 +74,20 @@ it('produces the full default dry-run command sequence', function (): void {
             'save the chosen answers to .kalimera.json so --continue can reuse them',
             'remove the sqlite database left over from `laravel new`',
             'sync the DB_* block from .env to .env.example',
-            'pin the compose file to the PHP 8.5 Sail runtime',
-            'set COMPOSE_PROJECT_NAME='.$project.' in .env so no other application shares its containers',
+            'require php ^8.5 and pin composer\'s platform to PHP 8.5',
             'publish pint.json',
             'publish phpstan.neon.dist (replaces the skeleton phpstan.neon)',
             'gitignore the generated ide-helper files',
             'publish rector.php',
             'add composer scripts: pint:dry, pint:fix, phpstan, phpstan-clear, ide-helper, rector:dry, rector:fix, quality',
-            'preconfigure boost.json with agents: claude_code, cursor, codex',
+            'allow the laravel/vet composer plugin, add the vet script and @vet to quality',
             'create src/{Domain,Shared,Support,Feature,Infrastructure} with .gitkeep files',
             'map the Core\\ namespace to src/ in composer.json',
-            'allow the laravel/vet composer plugin in composer.json',
-            'add composer script: vet, and add @vet to quality',
             'publish app/Providers/AgentGuardServiceProvider.php',
             'register AgentGuardServiceProvider in bootstrap/providers.php',
+            'set COMPOSE_PROJECT_NAME='.$project.' in .env so no other application shares its containers',
+            'set SCOUT_DRIVER=database in .env and .env.example',
+            'preconfigure boost.json with agents: claude_code, cursor, codex',
             'repair the published fortify, starter kit and horizon stubs that phpstan rejects',
         ]);
 });
@@ -110,9 +117,9 @@ it('honours a config file for defaults and the additional-packages catalog', fun
 
     expect($exitCode)->toBe(0)
         ->and($commands)->toContain(['laravel', 'new', 'demo-app', '--pest', '--git', '--no-boost', '--no-interaction', '--vue'])
-        ->and($commands)->toContain(['php', 'artisan', 'sail:install', '--with=mysql', '--no-interaction'])
-        ->and($commands)->toContain(['./vendor/bin/sail', 'composer', 'require', 'spatie/laravel-medialibrary'])
-        ->and($commands)->toContain(['./vendor/bin/sail', 'composer', 'require', '--dev', 'barryvdh/laravel-debugbar'])
+        ->and($commands)->toContain(['env', 'DOCKER_HOST=unix:///nonexistent/kalimera.sock', 'php', 'artisan', 'sail:install', '--with=mysql', '--php=8.5', '--no-interaction'])
+        ->and($commands)->toContain(['composer', 'require', '--no-scripts', '--no-plugins', '--ignore-platform-req=ext-*', '--no-interaction', '--', 'spatie/laravel-medialibrary'])
+        ->and($commands)->toContain(['composer', 'require', '--dev', '--no-scripts', '--no-plugins', '--ignore-platform-req=ext-*', '--no-interaction', '--', 'laravel/boost', 'barryvdh/laravel-debugbar'])
         ->and($commands)->toContain(['./vendor/bin/sail', 'artisan', 'vendor:publish', '--provider=Spatie\\MediaLibrary\\MediaLibraryServiceProvider', '--no-interaction']);
 });
 
@@ -134,7 +141,7 @@ it('leaves Laravel Boost out of the plan entirely when it is declined', function
     expect($exitCode)->toBe(0)
         // Not a bare 'boost' match: `laravel new` always passes --no-boost, since kalimera
         // installs Boost itself rather than letting the installer do it.
-        ->and($printable)->not->toContain('require laravel/boost')
+        ->and($printable)->not->toContain('laravel/boost')
         ->and($printable)->not->toContain('boost:install')
         ->and($printable)->not->toContain('boost:update')
         ->and($processRunner->fileActions)->not->toContain('preconfigure boost.json with agents: claude_code, cursor, codex')
@@ -173,9 +180,9 @@ it('fails for an unknown command', function (): void {
     expect(runFakeInstaller(new FakeProcessRunner(dryRun: true), ['definitely-not-a-command']))->toBe(1);
 });
 
-// Vet is picked at the quality-tools prompt but never installed by that step, so a run
-// that wants only vet has to skip QualityToolsInstall — whose `composer require --dev`
-// would otherwise name no packages at all — and still record the trust file.
+// Vet is picked at the quality-tools prompt but has nothing to do with QualityToolsInstall,
+// so a run that wants only vet skips that step and still downloads vet and records the
+// trust file.
 it('installs vet on its own when no static analysis tool is selected', function (): void {
     $configPath = tempDir().'/kalimera.config.json';
     file_put_contents($configPath, json_encode([
@@ -189,8 +196,8 @@ it('installs vet on its own when no static analysis tool is selected', function 
     $lines = $processRunner->commandLines();
 
     expect($exitCode)->toBe(0)
-        ->and($lines)->toContain('./vendor/bin/sail composer require laravel/vet --dev')
+        ->and($lines)->toContain('composer require --dev --no-scripts --no-plugins --ignore-platform-req=ext-* --no-interaction -- laravel/boost laravel/vet')
         ->and($lines)->toContain('./vendor/bin/sail php vendor/bin/vet --init --no-interaction')
-        ->and(implode(' ', $lines))->not->toContain('composer require --dev laravel/pint')
+        ->and(implode(' ', $lines))->not->toContain('laravel/pint')
         ->and($processRunner->fileActions)->not->toContain('publish pint.json');
 });

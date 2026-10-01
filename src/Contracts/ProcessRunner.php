@@ -9,9 +9,9 @@ use Closure;
 interface ProcessRunner
 {
     /**
-     * What to pass as `attempts` for a command that reaches the network. Composer and npm
-     * downloads arrive truncated often enough over a slow link that a single failure says
-     * nothing about whether the command was sound.
+     * What to pass as `attempts` for a command that reaches the network, where a failure
+     * can be transient. A caller that can tell a network failure from a deterministic one
+     * — PackagesRequire against a version conflict — retries only the former.
      */
     public const int NETWORK_ATTEMPTS = 3;
 
@@ -37,6 +37,15 @@ interface ProcessRunner
      * @param  list<string>  $command
      */
     public function probe(array $command, ?string $cwd = null): bool;
+
+    /**
+     * A probe that wants the answer rather than a yes or no: the command's trimmed output
+     * when it succeeds, null when it fails, times out or cannot start. Runs during a dry
+     * run for the same reason a probe does.
+     *
+     * @param  list<string>  $command
+     */
+    public function ask(array $command, ?string $cwd = null): ?string;
 
     /**
      * Best-effort housekeeping whose failure is not worth stopping the run for — removing

@@ -21,8 +21,7 @@ use Kalimera\Tests\Fakes\FakeProcessRunner;
  * Relative path to content hash, for every file under the application.
  *
  * The run state file is left out: it is kalimera's bookkeeping, not the application, and
- * the manifest guard legitimately refreshes its composer.json snapshot at the start of
- * every composer command — including the ones a rerun repeats.
+ * the checkpoint legitimately rewrites it as each step finishes — including a rerun.
  *
  * @return array<string, string>
  */

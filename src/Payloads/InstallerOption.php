@@ -51,7 +51,12 @@ readonly class InstallerOption
 
     public function wantsHorizon(): bool
     {
-        return in_array('horizon', $this->aroundPackages, true);
+        return $this->wantsAroundPackage('horizon');
+    }
+
+    public function wantsAroundPackage(string $package): bool
+    {
+        return in_array($package, $this->aroundPackages, true);
     }
 
     public function wantsQualityTool(string $tool): bool
@@ -68,6 +73,15 @@ readonly class InstallerOption
     public function wantsStaticAnalysis(): bool
     {
         return array_intersect(['pint', 'phpstan', 'rector'], $this->qualityTools) !== [];
+    }
+
+    /**
+     * Vet's own platform requirement is PHP 8.4. Laravel runs on less, and kalimera takes
+     * any constraint at the PHP prompt, so the two can legitimately disagree.
+     */
+    public function installsVet(): bool
+    {
+        return $this->wantsQualityTool('vet') && version_compare($this->phpMinorVersion(), '8.4', '>=');
     }
 
     public function wantsAdditionalPackage(string $package): bool

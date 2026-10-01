@@ -11,7 +11,6 @@ use Kalimera\Services\BackupPath;
 use Kalimera\Services\ComposerFileEditor;
 use Kalimera\Services\FileWriter;
 use Kalimera\Services\GitignoreEditor;
-use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Services\TemplatePublisher;
 
 use function Laravel\Prompts\warning;
@@ -21,7 +20,6 @@ readonly class QualityToolsInstall implements Pipeline
     public function __construct(
         private InstallerOption $installerOption,
         private ProcessRunner $processRunner,
-        private SailCommandBuilder $sailCommandBuilder,
     ) {}
 
     public function label(): string
@@ -35,28 +33,6 @@ readonly class QualityToolsInstall implements Pipeline
      */
     public function execute(): void
     {
-        $packages = [];
-
-        if ($this->installerOption->wantsQualityTool('pint')) {
-            $packages[] = 'laravel/pint';
-        }
-
-        if ($this->installerOption->wantsQualityTool('phpstan')) {
-            $packages[] = 'larastan/larastan';
-            $packages[] = 'barryvdh/laravel-ide-helper';
-        }
-
-        if ($this->installerOption->wantsQualityTool('rector')) {
-            $packages[] = 'rector/rector';
-            $packages[] = 'driftingly/rector-laravel';
-        }
-
-        $this->processRunner->runCommand(
-            attempts: ProcessRunner::NETWORK_ATTEMPTS,
-            command: $this->sailCommandBuilder->composer('require', '--dev', ...$packages),
-            cwd: $this->sailCommandBuilder->path(),
-        );
-
         $this->publishConfigurations();
         $this->registerComposerScripts();
     }

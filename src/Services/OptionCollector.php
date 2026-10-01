@@ -28,6 +28,7 @@ readonly class OptionCollector
         'horizon' => 'Horizon — Redis queue dashboard & supervisor',
         'fortify' => 'Fortify — headless authentication backend (starter kits already include it)',
         'ai' => 'Laravel AI — official AI SDK (laravel/ai)',
+        'scout' => 'Scout — full-text search on the database driver (laravel/scout)',
         'nightwatch' => 'Nightwatch — monitoring agent (laravel/nightwatch)',
     ];
 

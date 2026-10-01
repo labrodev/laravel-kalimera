@@ -21,19 +21,23 @@ function runUntilItFails(string $targetPath, string $failOn): FakeProcessRunner
 it('records the steps that finished and drops the record once the scaffold completes', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     $recorded = json_decode((string) file_get_contents($targetPath.'/.kalimera.json'), true)['completedSteps'];
 
     expect($recorded)->toBe([
         'AppCreate',
         'SailInstall',
-        'SailRuntimeConfigure',
+        'PhpConstraintApply',
+        'QualityToolsInstall',
+        'VetInstall',
+        'CoreStructureScaffold',
+        'PackagesRequire',
+        'AgentGuardConfigure',
         'SailPortsConfigure',
         'SailStart',
-        'PhpConstraintApply',
+        'DependenciesInstall',
         'AroundPackagesInstall',
-        'QualityToolsInstall',
     ]);
 
     $resumed = new FakeProcessRunner;
@@ -45,7 +49,7 @@ it('records the steps that finished and drops the record once the scaffold compl
 it('does not replay the steps an earlier run finished', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     $resumed = new FakeProcessRunner;
     runFakeInstaller($resumed, ['new', $targetPath, '--defaults', '--continue']);
@@ -53,27 +57,24 @@ it('does not replay the steps an earlier run finished', function (): void {
     $lines = $resumed->commandLines();
 
     expect($lines)->not->toContain('laravel new demo-app --pest --git --no-boost --no-interaction --react')
-        ->and($lines)->not->toContain('php artisan sail:install --with=pgsql,redis --no-interaction')
-        ->and($lines)->not->toContain('./vendor/bin/sail composer require laravel/horizon')
-        ->and($lines)->not->toContain('./vendor/bin/sail composer require --dev laravel/pint larastan/larastan barryvdh/laravel-ide-helper rector/rector driftingly/rector-laravel');
+        ->and($lines)->not->toContain('env DOCKER_HOST=unix:///nonexistent/kalimera.sock php artisan sail:install --with=pgsql,redis --no-interaction')
+        ->and(implode("\n", $lines))->not->toContain('composer require')
+        ->and($lines)->not->toContain('./vendor/bin/sail composer install --no-interaction')
+        ->and($lines)->not->toContain('./vendor/bin/sail artisan horizon:install');
 });
 
 it('picks up at the step that failed and runs the rest of the plan', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     $resumed = new FakeProcessRunner;
     runFakeInstaller($resumed, ['new', $targetPath, '--defaults', '--continue']);
 
     expect($resumed->commandLines())->toBe([
         './vendor/bin/sail up -d --wait',
-        './vendor/bin/sail composer require laravel/boost --dev',
         './vendor/bin/sail artisan boost:install --guidelines --skills --mcp --no-interaction',
         './vendor/bin/sail artisan boost:update --no-discover --no-interaction',
-        './vendor/bin/sail composer dump-autoload',
-        './vendor/bin/sail composer require laravel/vet --dev',
-        './vendor/bin/sail php vendor/bin/vet --init --no-interaction',
         './vendor/bin/sail artisan migrate --no-interaction',
         './vendor/bin/sail npm install',
         './vendor/bin/sail composer ide-helper',
@@ -91,7 +92,7 @@ it('picks up at the step that failed and runs the rest of the plan', function ()
 it('starts the containers again even though an earlier run already did', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     $resumed = new FakeProcessRunner;
     runFakeInstaller($resumed, ['new', $targetPath, '--defaults', '--continue']);
@@ -103,7 +104,7 @@ it('starts the containers again even though an earlier run already did', functio
 it('keeps a config edited between the failed run and the resume', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     file_put_contents($targetPath.'/pint.json', '{"preset": "edited while debugging"}');
 
@@ -116,9 +117,14 @@ it('keeps a config edited between the failed run and the resume', function (): v
 it('backs the edit up rather than losing it when the failed step has to republish', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    // Failing inside the quality step means it is not checkpointed, so the resume
-    // re-runs it — and republishing is a copy over whatever is there.
-    runUntilItFails(targetPath: $targetPath, failOn: 'larastan/larastan');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
+
+    // The quality step runs no command that could fail, so stand in for a run that died
+    // inside it (interrupted, say): it is not checkpointed, so the resume re-runs it — and
+    // republishing is a copy over whatever is there.
+    $state = json_decode((string) file_get_contents($targetPath.'/.kalimera.json'), true);
+    $state['completedSteps'] = array_slice($state['completedSteps'], 0, (int) array_search('QualityToolsInstall', $state['completedSteps'], true));
+    file_put_contents($targetPath.'/.kalimera.json', json_encode($state));
 
     file_put_contents($targetPath.'/pint.json', '{"preset": "edited while debugging"}');
 
@@ -130,7 +136,7 @@ it('backs the edit up rather than losing it when the failed step has to republis
 it('keeps the resume state out of the initial commit', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     expect(file_get_contents($targetPath.'/.gitignore'))->toContain('/.kalimera.json');
 });
@@ -138,7 +144,7 @@ it('keeps the resume state out of the initial commit', function (): void {
 it('refuses to resume when the saved answers were lost', function (): void {
     $targetPath = tempDir().'/demo-app';
 
-    runUntilItFails(targetPath: $targetPath, failOn: 'require laravel/boost');
+    runUntilItFails(targetPath: $targetPath, failOn: 'boost:install');
 
     $state = json_decode((string) file_get_contents($targetPath.'/.kalimera.json'), true);
     unset($state['answers']);

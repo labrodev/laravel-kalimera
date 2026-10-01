@@ -43,7 +43,7 @@ Mirror kalimera's own prompts — cover every topic, batched into as few rounds 
 | App name | plain name (created in CWD) or a path like `~/www/my-app` | positional argument |
 | Starter kit | react, vue, livewire, svelte, none | `starterKit` |
 | Manual Inertia — only when kit is `none` | no / yes (wiring stays manual either way) | `installInertia` |
-| Ecosystem packages | all of horizon, fortify, ai, nightwatch — deselect to trim | `aroundPackages` |
+| Ecosystem packages | all of horizon, fortify, ai, scout, nightwatch — deselect to trim | `aroundPackages` |
 | Sail services | pgsql + redis, mysql, mailpit, meilisearch, minio | `sailServices` |
 | PHP constraint | ^8.5, ^8.4, custom | `phpConstraint` |
 | Quality tools | pint + phpstan + rector + vet, or fewer | `qualityTools` |
@@ -126,7 +126,7 @@ All `preselected` keys:
 |-----|--------|---------|
 | `starterKit` | `react`, `vue`, `livewire`, `svelte`, `none` | `"react"` |
 | `installInertia` | bool — only with `starterKit: none`; wiring stays manual | `false` |
-| `aroundPackages` | `horizon`, `fortify`, `ai`, `nightwatch` | all four |
+| `aroundPackages` | `horizon`, `fortify`, `ai`, `scout`, `nightwatch` | all five |
 | `sailServices` | `pgsql`, `redis`, `mysql`, `mailpit`, `meilisearch`, `minio` | `["pgsql", "redis"]` |
 | `phpConstraint` | version constraint string | `"^8.5"` |
 | `qualityTools` | `pint`, `phpstan`, `rector`, `vet` | all four |
@@ -206,9 +206,9 @@ Every generated app registers `AgentGuardServiceProvider` last in `bootstrap/pro
 | `migrate:reset`, `migrate:rollback`, `db:wipe` | ask the human to run it |
 
 Working in the app:
-- Everything runs through Sail — `./vendor/bin/sail artisan ...`, `./vendor/bin/sail composer ...`. The host PHP version never matters.
+- Everything runs through Sail — `./vendor/bin/sail artisan ...`, `./vendor/bin/sail composer ...`. The scaffold itself needs PHP 8.3+ and Composer 2.2+ on the host (it downloads packages there); inside the app, composer.json pins `config.platform.php` to the container's PHP, so a host `composer update` still resolves for the container.
 - Ready-made composer scripts: `pint:dry` / `pint:fix`, `phpstan` / `phpstan-clear`, `rector:dry` / `rector:fix`, `ide-helper`, `vet`, aggregate `quality` — plus `postmark:push` / `postmark:pull` when Postmark was chosen.
-- Vet gates dependencies: `sail composer require <package>` now fails with "packages are not trusted" until someone reads the change. Run `sail composer vet` **in a terminal** — the composer plugin never asks, and non-interactive runs can only report. Vet can hand the diff to a coding agent from that prompt; you decide what it records. `vet.json` is committed. Kalimera sets no `minimum-release-age`, so nothing is held back by age alone.
+- Vet gates dependencies: `sail composer require <package>` now fails with "packages are not trusted" until someone reads the change. Run `sail composer vet` **in a terminal** — the composer plugin never asks, and non-interactive runs can only report. Vet can hand the diff to a coding agent from that prompt; you decide what it records. `vet.json` is committed. Kalimera sets no `minimum-release-age`, so nothing is held back by age alone. The first `vet.json` is trust-on-first-use: kalimera downloads every package with plugins off, so vet never gated the initial set, and `vet --init` then records all of it as trusted. If that matters, review the scaffold's package list before building on it.
 - Printed next steps after success: `cd <app>`, `./vendor/bin/sail up -d`, `./vendor/bin/sail composer quality`.
 
 ## Troubleshooting

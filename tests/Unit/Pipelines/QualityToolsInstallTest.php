@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Pipelines\QualityToolsInstall;
-use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Tests\Fakes\FakeProcessRunner;
 
 function makeQualityToolsInstall(InstallerOption $installerOption, FakeProcessRunner $processRunner): QualityToolsInstall
@@ -20,7 +19,6 @@ function makeQualityToolsInstall(InstallerOption $installerOption, FakeProcessRu
     return new QualityToolsInstall(
         installerOption: $installerOption,
         processRunner: $processRunner,
-        sailCommandBuilder: new SailCommandBuilder(appPath: $installerOption->targetPath),
     );
 }
 
@@ -39,15 +37,14 @@ function qualityComposerScripts(InstallerOption $installerOption): array
     return $decoded['scripts'] ?? [];
 }
 
-it('requires the selected quality packages through sail', function (): void {
+it('only writes files, leaving the packages to the host-side require', function (): void {
     $installerOption = makeInstallerOption(['qualityTools' => ['pint', 'phpstan', 'rector']]);
     $processRunner = new FakeProcessRunner;
 
     makeQualityToolsInstall($installerOption, $processRunner)->execute();
 
-    expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require --dev laravel/pint larastan/larastan barryvdh/laravel-ide-helper rector/rector driftingly/rector-laravel',
-    ]);
+    expect($processRunner->commands)->toBe([])
+        ->and($processRunner->fileActions)->not->toBe([]);
 });
 
 it('strips the src paths from the published configs when no core structure is scaffolded', function (): void {

@@ -25,12 +25,6 @@ readonly class InertiaInstall implements Pipeline
     public function execute(): void
     {
         $this->processRunner->runCommand(
-            attempts: ProcessRunner::NETWORK_ATTEMPTS,
-            command: $this->sailCommandBuilder->composer('require', 'inertiajs/inertia-laravel'),
-            cwd: $this->sailCommandBuilder->path(),
-        );
-
-        $this->processRunner->runCommand(
             command: $this->sailCommandBuilder->artisan('inertia:middleware'),
             cwd: $this->sailCommandBuilder->path(),
         );

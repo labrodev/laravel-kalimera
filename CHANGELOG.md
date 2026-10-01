@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every `sail` command ran twice at the same time.** Kalimera started `./vendor/bin/sail` by
+  a relative path with the application as the working directory. On macOS, PHP's
+  `proc_open()` handed that to `posix_spawn`, which reported "No such file or directory"
+  while the child still ran the command. Symfony Process read the reported failure as "not
+  started" and ran the command again through a shell, so two copies ran concurrently.
+  Measured: 10 `sail php` calls ran 20 times, and plain `proc_open()` returned false for a
+  command that demonstrably ran. The program path is now resolved against the working
+  directory before spawning, and each command runs exactly once.
+  - This was the single cause of the failures that stopped scaffolds at a different step each
+    run. Two composers rewrote composer.json at once, which gave "composer.json does not
+    contain valid JSON", 0-byte downloads and "exists and is not a directory". Two Rector runs
+    raced on the cache ("Unable to delete directory"). Two `migrate`s created the same table
+    (`migrations_id_seq` already exists). Two publishes created the same files (`mkdir(): File
+    exists`), and two `boost:add-skill`s left half-moved skill downloads in `.ai/skills`.
+- `sail:install` no longer pulls every service image and builds the app image on its own. It
+  did both whenever Docker answered, before the PHP runtime was even pinned, so the image it
+  built was the wrong one, and a Docker Desktop whose pull hangs stalled the scaffold at step
+  2. `sail up` builds the right image and pulls only what is missing.
+- Laravel AI is set up rather than only downloaded. It is published by provider, as its
+  install instructions say, which brings its config, the conversations migration and the
+  `make:agent` stubs. A tag-filtered publish would skip the migration, because it has no tag.
+
+### Added
+
+- Laravel Scout as a preselected ecosystem package (`scout` in `aroundPackages`). Its config is
+  published and `SCOUT_DRIVER` is set to `database`, which runs full-text search on PostgreSQL
+  or MySQL with no extra service. It falls back to `collection` when neither is chosen.
+- The requirements check verifies PHP 8.3+ and Composer 2.2+ on the host instead of only their
+  presence. A dry run warns instead of stopping, as it already does for a stopped Docker.
+
+### Changed
+
+- Packages are downloaded by the host's composer before any container starts, and Sail starts
+  only once `vendor/` is complete. That is one resolve instead of one `sail composer require`
+  per step, on the host's own filesystem.
+  - "Restricting PHP" edits composer.json directly. It sets `require.php` and pins
+    `config.platform.php`, so the host resolves packages for the container's PHP whatever PHP
+    the host runs. The pin is the container's exact version (e.g. `8.5.11`), read from the
+    local Sail image when one exists. Otherwise it is the bare minor, which composer reads as
+    `x.y.0`. It errs low on purpose: a pin above the container's PHP would allow a package the
+    container cannot run. The pin stays in the finished application.
+  - Package downloads retry only on network failures. A version conflict is reported on the
+    first attempt instead of after three. Package names come after `--`, so a name from the
+    config is never read as a composer option.
+  - "Installing dependencies in the container" also runs
+    `vendor:publish --tag=laravel-assets --force`, the skeleton's `post-update-cmd`, which
+    neither the host's `--no-scripts` require nor the container's `install` triggers.
+  - The new "Downloading packages" step runs one runtime batch, one `--dev` batch, then the
+    optional packages one at a time. Every command runs with
+    `--no-scripts --no-plugins --ignore-platform-req=ext-*`.
+  - The new "Installing dependencies in the container" step runs `vet --init`, then
+    `sail composer install`. That checks the extensions the host skipped, runs the plugins and
+    runs `package:discover`.
+  - The remaining package steps now only run their installers (`horizon:install`,
+    `vendor:publish`, `boost:install`, …).
+- Laravel AI is a required package now, so a resolution failure stops the run instead of being
+  skipped with a warning. Nightwatch stays optional.
+- Host ports are probed immediately before `sail up` rather than before the downloads, which
+  left a minute or more for another program to take one.
+
+### Removed
+
+- The composer.json snapshot/restore/retry guard (`ComposerManifestGuard`), its serialized
+  retry path, and the manifest snapshot in `.kalimera.json`. It repaired the damage the
+  duplicate execution did.
+- The one-second pause after every file change (25 per run), and the `chown` of the
+  container's home directory after `sail up`. Sail's own startup already sets that ownership.
+- The "Matching the Sail runtime" step, which regex-edited compose.yaml. `sail:install --php=<minor>`
+  writes the same two lines (build context and image tag); it is passed only when Sail ships
+  that runtime, since Sail substitutes the version unchecked.
+- The separate "Installing extra packages" step. Extra packages are part of
+  "Downloading packages".
+
 ## [1.1.0] - 2026-09-29
 
 ### Added

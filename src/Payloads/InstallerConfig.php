@@ -78,7 +78,7 @@ readonly class InstallerConfig
             ],
             starterKit: 'react',
             installInertia: false,
-            aroundPackages: ['horizon', 'fortify', 'ai', 'nightwatch'],
+            aroundPackages: ['horizon', 'fortify', 'ai', 'scout', 'nightwatch'],
             sailServices: ['pgsql', 'redis'],
             phpConstraint: '^8.5',
             qualityTools: ['pint', 'phpstan', 'rector', 'vet'],

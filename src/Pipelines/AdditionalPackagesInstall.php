@@ -24,24 +24,12 @@ readonly class AdditionalPackagesInstall implements Pipeline
 
     public function label(): string
     {
-        return 'Installing additional packages';
+        return 'Publishing additional package configuration';
     }
 
     public function execute(): void
     {
-        $selected = $this->selected();
-
-        $this->requireAll(entries: array_values(array_filter(
-            $selected,
-            fn (AdditionalPackage $additionalPackage): bool => ! $additionalPackage->dev,
-        )));
-
-        $this->requireAll(dev: true, entries: array_values(array_filter(
-            $selected,
-            fn (AdditionalPackage $additionalPackage): bool => $additionalPackage->dev,
-        )));
-
-        foreach ($selected as $additionalPackage) {
+        foreach ($this->selected() as $additionalPackage) {
             foreach ($additionalPackage->publishProviders as $provider) {
                 $this->processRunner->runCommand(
                     command: $this->sailCommandBuilder->artisan('vendor:publish', '--provider='.$provider, '--no-interaction'),
@@ -49,29 +37,6 @@ readonly class AdditionalPackagesInstall implements Pipeline
                 );
             }
         }
-    }
-
-    /**
-     * @param  list<AdditionalPackage>  $entries
-     */
-    private function requireAll(array $entries, bool $dev = false): void
-    {
-        if ($entries === []) {
-            return;
-        }
-
-        $packages = array_map(
-            fn (AdditionalPackage $additionalPackage): string => $additionalPackage->package,
-            $entries,
-        );
-
-        $arguments = $dev ? ['require', '--dev', ...$packages] : ['require', ...$packages];
-
-        $this->processRunner->runCommand(
-            attempts: ProcessRunner::NETWORK_ATTEMPTS,
-            command: $this->sailCommandBuilder->composer(...$arguments),
-            cwd: $this->sailCommandBuilder->path(),
-        );
     }
 
     /**

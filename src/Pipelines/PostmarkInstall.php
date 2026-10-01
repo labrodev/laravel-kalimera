@@ -9,7 +9,6 @@ use Kalimera\Contracts\ProcessRunner;
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Services\ComposerFileEditor;
 use Kalimera\Services\EnvFileWriter;
-use Kalimera\Services\SailCommandBuilder;
 
 readonly class PostmarkInstall implements Pipeline
 {
@@ -21,7 +20,6 @@ readonly class PostmarkInstall implements Pipeline
     public function __construct(
         private InstallerOption $installerOption,
         private ProcessRunner $processRunner,
-        private SailCommandBuilder $sailCommandBuilder,
     ) {}
 
     public function label(): string
@@ -31,19 +29,6 @@ readonly class PostmarkInstall implements Pipeline
 
     public function execute(): void
     {
-        $this->processRunner->runCommand(
-            attempts: ProcessRunner::NETWORK_ATTEMPTS,
-            // config/mail.php ships a 'postmark' transport and this is the package backing
-            // it: Laravel reaches Postmark through symfony/mailer, never through Postmark's
-            // own HTTP SDK. That SDK is the wrong dependency twice over — nothing in the
-            // scaffold calls an API client, and it caps guzzle at ^7.8 against Laravel 13's
-            // 8.x, so requiring it walks guzzle, psr7 and promises back a major version each
-            // and drops symfony/polyfill-php82 on the way out. Rewriting six packages of the
-            // framework's HTTP stack is what made this step fail on its own -W every run.
-            command: $this->sailCommandBuilder->composer('require', 'symfony/postmark-mailer'),
-            cwd: $this->sailCommandBuilder->path(),
-        );
-
         $this->processRunner->applyFileChange(
             action: function (): void {
                 $composerFileEditor = new ComposerFileEditor($this->installerOption->targetPath.'/composer.json');

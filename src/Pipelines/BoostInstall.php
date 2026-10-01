@@ -29,12 +29,6 @@ readonly class BoostInstall implements Pipeline
 
     public function execute(): void
     {
-        $this->processRunner->runCommand(
-            attempts: ProcessRunner::NETWORK_ATTEMPTS,
-            command: $this->sailCommandBuilder->composer('require', 'laravel/boost', '--dev'),
-            cwd: $this->sailCommandBuilder->path(),
-        );
-
         if ($this->installerOption->boostAgents === []) {
             $this->processRunner->runCommand(
                 command: $this->sailCommandBuilder->artisan('boost:install', '--no-interaction'),

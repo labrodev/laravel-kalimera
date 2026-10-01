@@ -16,6 +16,36 @@ it('answers a probe truthfully during a dry run', function (): void {
         ->and($shellRunner->probe(command: ['false']))->toBeFalse();
 });
 
+it('answers with the trimmed output of a command', function (): void {
+    expect(new ShellRunner(dryRun: false)->ask(command: ['echo', 'hello']))->toBe('hello');
+});
+
+// A question with no answer, never an error: callers fall back to a default.
+it('answers null when the command fails rather than throwing', function (): void {
+    expect(new ShellRunner(dryRun: false)->ask(command: ['bash', '-c', 'echo partial; exit 3']))->toBeNull();
+});
+
+it('answers null when the program does not exist', function (): void {
+    expect(new ShellRunner(dryRun: false)->ask(command: ['kalimera-definitely-not-a-program']))->toBeNull();
+});
+
+it('answers null when the command outlives the quiet timeout', function (): void {
+    $shellRunner = new ShellRunner(dryRun: false, quietTimeoutSeconds: 0.3);
+
+    expect($shellRunner->ask(command: ['bash', '-c', 'sleep 5; echo late']))->toBeNull();
+});
+
+it('answers a question during a dry run', function (): void {
+    // Like a probe, asking changes nothing, so a rehearsal gets the real answer.
+    expect(new ShellRunner(dryRun: true)->ask(command: ['echo', 'hello']))->toBe('hello');
+});
+
+it('answers in the given working directory', function (): void {
+    $path = tempDir();
+
+    expect(new ShellRunner(dryRun: false)->ask(command: ['pwd'], cwd: $path))->toBe($path);
+});
+
 it('skips a quiet side effect during a dry run', function (): void {
     $path = tempDir().'/side-effect-marker';
     $shellRunner = new ShellRunner(dryRun: true);
@@ -278,4 +308,28 @@ it('records why a quiet command was abandoned in the transcript', function (): v
     // The run continues, so the transcript is the only place the reason survives.
     expect(file_get_contents($path))->toContain('quiet [aborted]:')
         ->and(file_get_contents($path))->toContain('exceeded the timeout');
+});
+
+it('runs a relative program exactly once when its working directory is not the current one', function (): void {
+    // The shape of every `./vendor/bin/sail …` the scaffold issues: a relative program, a
+    // cwd naming the application, and a runner whose own directory is somewhere else. On
+    // macOS posix_spawn reported ENOENT for it while the child still ran, and the shell
+    // fallback behind that report ran it a second time.
+    $directory = tempDir();
+    $script = $directory.'/vendor/bin/tool';
+    mkdir(dirname($script), 0755, true);
+    file_put_contents($script, "#!/usr/bin/env bash\necho run >> \"\$(dirname \"\$0\")/../../runs.log\"\n");
+    chmod($script, 0755);
+
+    expect(getcwd())->not->toBe($directory);
+
+    $shellRunner = new ShellRunner(dryRun: false);
+
+    foreach (range(1, 5) as $ignored) {
+        $shellRunner->runCommand(command: ['./vendor/bin/tool'], cwd: $directory);
+    }
+
+    expect(file($directory.'/runs.log'))->toHaveCount(5);
+
+    removeDir($directory);
 });

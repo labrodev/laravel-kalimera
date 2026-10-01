@@ -61,15 +61,13 @@ it('starts the containers with a single command when nothing conflicts', functio
     makeSailStart($installerOption, $processRunner)->execute();
 
     expect($processRunner->commandLines())->toBe(['./vendor/bin/sail up -d --wait'])
-        ->and(quietLines($processRunner))->toBe([
-            'docker compose exec -T -u root laravel.test chown -R sail /home/sail',
-        ]);
+        ->and($processRunner->quietCommands)->toBe([]);
 });
 
-// Both halves matter. That nothing was performed is the promise; that the fixup was still
+// Both halves matter. That nothing was performed is the promise; that the removal was still
 // asked for is what makes the first half evidence rather than an accident of the fake —
 // an empty performed-list would also be produced by a step that never reached the call.
-it('asks for the container home-directory fixup but performs nothing during a dry run', function (): void {
+it('asks for the leftover removal but performs nothing during a dry run', function (): void {
     $installerOption = makeInstallerOption();
     $processRunner = new FakeProcessRunner(dryRun: true);
 
@@ -82,7 +80,6 @@ it('asks for the container home-directory fixup but performs nothing during a dr
             // as far as asking for the removal — and is refused. Printing what it would
             // have destroyed is the point of a dry run reaching this call at all.
             ['./vendor/bin/sail', 'down', '-v'],
-            ['docker', 'compose', 'exec', '-T', '-u', 'root', 'laravel.test', 'chown', '-R', 'sail', '/home/sail'],
         ]);
 });
 
@@ -104,7 +101,6 @@ it('removes leftover containers and retries when the first start fails', functio
             'docker rm -f '.$project.'-pgsql-1',
             'docker rm -f '.$project.'-redis-1',
             'docker network rm '.$project.'_sail',
-            'docker compose exec -T -u root laravel.test chown -R sail /home/sail',
         ]);
 });
 

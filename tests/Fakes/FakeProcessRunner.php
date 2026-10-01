@@ -48,6 +48,12 @@ class FakeProcessRunner implements ProcessRunner
     /** @var array<string, Closure> */
     private array $sideEffects = [];
 
+    /** @var list<array{command: list<string>, cwd: string|null}> */
+    public array $askCommands = [];
+
+    /** @var array<string, string|null> */
+    private array $answers = [];
+
     public function __construct(private readonly bool $dryRun = false) {}
 
     /**
@@ -131,6 +137,33 @@ class FakeProcessRunner implements ProcessRunner
         $this->probeCommands[] = ['command' => $command, 'cwd' => $cwd];
 
         return $this->answerFor($command);
+    }
+
+    /**
+     * @param  list<string>  $command
+     */
+    public function ask(array $command, ?string $cwd = null): ?string
+    {
+        $this->askCommands[] = ['command' => $command, 'cwd' => $cwd];
+
+        $joined = implode(' ', $command);
+
+        foreach ($this->answers as $needle => $answer) {
+            if (str_contains($joined, $needle)) {
+                return $answer;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * What ask() returns for a command containing the needle; anything unanswered gets
+     * null, as a command that failed would.
+     */
+    public function answer(string $needle, ?string $output): void
+    {
+        $this->answers[$needle] = $output;
     }
 
     public function attemptQuietly(array $command, ?string $cwd = null): bool

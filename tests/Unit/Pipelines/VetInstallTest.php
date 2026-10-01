@@ -2,10 +2,8 @@
 
 declare(strict_types=1);
 
-use Kalimera\Exceptions\CommandFailedException;
 use Kalimera\Payloads\InstallerOption;
 use Kalimera\Pipelines\VetInstall;
-use Kalimera\Services\SailCommandBuilder;
 use Kalimera\Tests\Fakes\FakeProcessRunner;
 
 /**
@@ -27,7 +25,6 @@ function makeVetInstall(FakeProcessRunner $processRunner, array $manifest = [], 
     return new VetInstall(
         installerOption: $installerOption,
         processRunner: $processRunner,
-        sailCommandBuilder: new SailCommandBuilder(appPath: $installerOption->targetPath),
     );
 }
 
@@ -46,29 +43,25 @@ function vetManifest(InstallerOption $installerOption): array
     return $decoded;
 }
 
-it('requires the package and records what the scaffold installed', function (): void {
+// The require happens on the host with the rest (PackagesRequire) and --init in the
+// container (DependenciesInstall); this step only prepares composer.json for them.
+it('edits composer.json and runs nothing', function (): void {
     $processRunner = new FakeProcessRunner;
 
     makeVetInstall($processRunner)->execute();
 
-    // No --minimum-release-age: a floor rejects releases younger than it even when they are
-    // trusted, so setting one here would hand over an application failing its own audit.
-    expect($processRunner->commandLines())->toBe([
-        './vendor/bin/sail composer require laravel/vet --dev',
-        './vendor/bin/sail php vendor/bin/vet --init --no-interaction',
-    ]);
+    expect($processRunner->commands)->toBe([])
+        ->and($processRunner->fileActions)->toBe(['allow the laravel/vet composer plugin, add the vet script and @vet to quality']);
 });
 
 // Composer aborts on an unlisted composer-plugin instead of warning past it, so the entry
-// arriving after the require would leave the package in the manifest and out of vendor/.
-it('allows the plugin before requiring it', function (): void {
-    $processRunner = new FakeProcessRunner;
+// has to be in place before the first command that runs with plugins on.
+it('allows the plugin', function (): void {
     $installerOption = makeInstallerOption();
 
-    makeVetInstall(processRunner: $processRunner, installerOption: $installerOption)->execute();
+    makeVetInstall(processRunner: new FakeProcessRunner, installerOption: $installerOption)->execute();
 
-    expect($processRunner->fileActions[0])->toBe('allow the laravel/vet composer plugin in composer.json')
-        ->and(vetManifest($installerOption)['config']['allow-plugins'])->toBe(['laravel/vet' => true]);
+    expect(vetManifest($installerOption)['config']['allow-plugins'])->toBe(['laravel/vet' => true]);
 });
 
 it('keeps the plugins an application already allows', function (): void {
@@ -113,29 +106,6 @@ it('does not add the vet gate twice when the step runs again', function (): void
     )->execute();
 
     expect(vetManifest($installerOption)['scripts']['quality'])->toBe(['@phpstan', '@vet']);
-});
-
-// Vet declines to record while composer.lock and vendor/ disagree — a state an earlier
-// composer flake can leave behind. The application is sound; vet.json just does not cover
-// it yet, so the scaffold reports it and finishes rather than dying at the last step.
-it('warns rather than failing when the trust file cannot be recorded', function (): void {
-    $processRunner = new FakeProcessRunner;
-    $processRunner->failOn('vet --init');
-    $installerOption = makeInstallerOption();
-
-    makeVetInstall(processRunner: $processRunner, installerOption: $installerOption)->execute();
-
-    expect(promptOutput())->toContain('Vet could not record the trust file')
-        ->and(vetManifest($installerOption)['scripts']['vet'])->toBe('vendor/bin/vet');
-});
-
-// The package has to be there: without it the `vet` script and the @vet gate registered
-// below would both point at a binary that does not exist.
-it('stops the scaffold when the package cannot be required', function (): void {
-    $processRunner = new FakeProcessRunner;
-    $processRunner->failOn('require laravel/vet');
-
-    expect(fn () => makeVetInstall($processRunner)->execute())->toThrow(CommandFailedException::class);
 });
 
 it('touches no files during a dry run', function (): void {

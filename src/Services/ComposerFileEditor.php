@@ -75,6 +75,11 @@ class ComposerFileEditor
         (new FileWriter)(contents: $encoded."\n", path: $this->path);
     }
 
+    public function pinPlatformPhp(string $version): void
+    {
+        $this->contents['config']['platform']['php'] = $version;
+    }
+
     public function setPhpConstraint(string $constraint): void
     {
         $require = ['php' => $constraint];

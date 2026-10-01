@@ -47,10 +47,6 @@ readonly class SailStart implements Pipeline
             $this->refuseBusyPorts($commandFailedException);
             $this->up();
         }
-
-        // Every side effect below goes through attemptQuietly, which a dry run skips on
-        // its own — there is no live container to exec into after a rehearsal anyway.
-        $this->grantHomeDirectory();
     }
 
     /**
@@ -145,19 +141,6 @@ readonly class SailStart implements Pipeline
     private function up(): void
     {
         $this->processRunner->runCommand(command: $this->sailCommandBuilder->command('up', '-d', '--wait'), cwd: $this->sailCommandBuilder->path());
-    }
-
-    /**
-     * Sail remaps the container user to the host UID but leaves /home/sail owned by the
-     * image's original user, so composer cannot write its cache and re-downloads every
-     * package on every command — slow, and far more exposure to flaky bind-mount writes.
-     */
-    private function grantHomeDirectory(): void
-    {
-        $this->processRunner->attemptQuietly(
-            command: ['docker', 'compose', 'exec', '-T', '-u', 'root', 'laravel.test', 'chown', '-R', 'sail', '/home/sail'],
-            cwd: $this->sailCommandBuilder->path(),
-        );
     }
 
     /**

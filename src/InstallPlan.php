@@ -16,17 +16,16 @@ use Kalimera\Pipelines\AppFinalize;
 use Kalimera\Pipelines\AroundPackagesInstall;
 use Kalimera\Pipelines\BoostInstall;
 use Kalimera\Pipelines\CoreStructureScaffold;
-use Kalimera\Pipelines\ExtraPackagesInstall;
+use Kalimera\Pipelines\DependenciesInstall;
 use Kalimera\Pipelines\InertiaInstall;
+use Kalimera\Pipelines\PackagesRequire;
 use Kalimera\Pipelines\PhpConstraintApply;
 use Kalimera\Pipelines\PostmarkInstall;
 use Kalimera\Pipelines\QualityToolsInstall;
 use Kalimera\Pipelines\SailInstall;
 use Kalimera\Pipelines\SailPortsConfigure;
-use Kalimera\Pipelines\SailRuntimeConfigure;
 use Kalimera\Pipelines\SailStart;
 use Kalimera\Pipelines\VetInstall;
-use Kalimera\Services\ComposerManifestGuard;
 use Kalimera\Services\NetworkPortChecker;
 use Kalimera\Services\SailCommandBuilder;
 
@@ -46,27 +45,47 @@ readonly class InstallPlan
     {
         $sailCommandBuilder = new SailCommandBuilder(appPath: $installerOption->targetPath);
 
-        $processRunner = new ComposerManifestGuard(
-            processRunner: $processRunner,
-            sailCommandBuilder: $sailCommandBuilder,
-            targetPath: $installerOption->targetPath,
-        );
-
+        // Host phase: every file the scaffold writes and every package it downloads, before
+        // any container exists — one composer resolve on the host's own filesystem instead
+        // of one `sail composer require` per step.
         $steps = [
             new AppCreate(installerOption: $installerOption, processRunner: $processRunner, transcriptFile: $transcriptFile),
+            // Host artisan runs here and nowhere later: once the platform pin below is in,
+            // vendor/ targets the container's PHP and may not load on the host's.
             new SailInstall(installerOption: $installerOption, processRunner: $processRunner),
-            new SailRuntimeConfigure(installerOption: $installerOption, processRunner: $processRunner),
-            new SailPortsConfigure(installerOption: $installerOption, portChecker: $this->portChecker, processRunner: $processRunner),
-            new SailStart(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder, portChecker: $this->portChecker),
-            new PhpConstraintApply(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder),
+            new PhpConstraintApply(installerOption: $installerOption, processRunner: $processRunner),
         ];
 
-        if ($installerOption->aroundPackages !== []) {
-            $steps[] = new AroundPackagesInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
+        if ($installerOption->wantsStaticAnalysis()) {
+            $steps[] = new QualityToolsInstall(installerOption: $installerOption, processRunner: $processRunner);
         }
 
-        if ($installerOption->wantsStaticAnalysis()) {
-            $steps[] = new QualityToolsInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
+        if ($installerOption->wantsQualityTool('vet')) {
+            $steps[] = new VetInstall(installerOption: $installerOption, processRunner: $processRunner);
+        }
+
+        if ($installerOption->installPostmark) {
+            $steps[] = new PostmarkInstall(installerOption: $installerOption, processRunner: $processRunner);
+        }
+
+        if ($installerOption->coreNamespace !== null) {
+            $steps[] = new CoreStructureScaffold(installerOption: $installerOption, processRunner: $processRunner);
+        }
+
+        $steps[] = new PackagesRequire(catalog: $installerConfig->additionalPackages, installerOption: $installerOption, processRunner: $processRunner);
+
+        $steps[] = new AgentGuardConfigure(installerOption: $installerOption, processRunner: $processRunner);
+
+        // Container phase: everything that executes application or package code, on the
+        // PHP the application was pinned to. Ports are probed immediately before they are
+        // bound — probed any earlier, the downloads above leave a minute or more for another
+        // program to take one.
+        $steps[] = new SailPortsConfigure(installerOption: $installerOption, portChecker: $this->portChecker, processRunner: $processRunner);
+        $steps[] = new SailStart(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder, portChecker: $this->portChecker);
+        $steps[] = new DependenciesInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
+
+        if (array_intersect(['horizon', 'fortify', 'ai', 'scout'], $installerOption->aroundPackages) !== []) {
+            $steps[] = new AroundPackagesInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
         }
 
         if ($installerOption->additionalPackages !== []) {
@@ -77,30 +96,9 @@ readonly class InstallPlan
             $steps[] = new BoostInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
         }
 
-        if ($installerOption->installPostmark) {
-            $steps[] = new PostmarkInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
         if ($installerOption->installInertia) {
             $steps[] = new InertiaInstall(processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
         }
-
-        if ($installerOption->coreNamespace !== null) {
-            $steps[] = new CoreStructureScaffold(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        if ($installerOption->extraPackages !== [] || $installerOption->extraDevPackages !== []) {
-            $steps[] = new ExtraPackagesInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        // After every step that installs a package, and before the ones that do not: the
-        // trust file vet records here has to describe the finished vendor directory, and
-        // its composer plugin fails any install of a package it does not already cover.
-        if ($installerOption->wantsQualityTool('vet')) {
-            $steps[] = new VetInstall(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
-        }
-
-        $steps[] = new AgentGuardConfigure(installerOption: $installerOption, processRunner: $processRunner);
 
         $steps[] = new AppFinalize(installerOption: $installerOption, processRunner: $processRunner, sailCommandBuilder: $sailCommandBuilder);
 

@@ -10,6 +10,7 @@ use Kalimera\Payloads\InstallerOption;
 use Kalimera\Services\EnvFileWriter;
 
 use function Laravel\Prompts\info;
+use function Laravel\Prompts\warning;
 
 readonly class SailInstall implements Pipeline
 {
@@ -41,12 +42,22 @@ readonly class SailInstall implements Pipeline
         }
 
         $this->processRunner->runCommand(
+            // sail:install pulls every service image and builds the application image
+            // whenever Docker answers. Both are premature here: the pull re-checks the
+            // registry for images already on disk — a Docker Desktop whose pull path hangs
+            // stalls the scaffold right here with nothing to say why — and the build is
+            // repeated by `sail up` anyway. Pointing DOCKER_HOST at nothing makes its
+            // `docker info` fail, so it only writes the compose file and .env; `sail up`
+            // builds the image and pulls what is missing later.
             command: [
+                'env',
+                'DOCKER_HOST=unix:///nonexistent/kalimera.sock',
                 'php',
                 'artisan',
                 'sail:install',
                 // `none` is Sail's own keyword for "the application container only".
                 '--with='.($this->installerOption->sailServices === [] ? 'none' : implode(',', $this->installerOption->sailServices)),
+                ...$this->runtimeOption(),
                 '--no-interaction',
             ],
             cwd: $this->installerOption->targetPath,
@@ -65,6 +76,31 @@ readonly class SailInstall implements Pipeline
                 description: 'sync the DB_* block from .env to .env.example',
             );
         }
+    }
+
+    /**
+     * Sail's own `--php` writes the runtime into both places compose.yaml names it — the
+     * build context and the image tag. It substitutes whatever it is given without checking,
+     * though, and a version Sail ships no runtime for would only fail at `sail up`, as a
+     * build context that does not exist. So the option is passed only when the runtime is
+     * there; otherwise Sail keeps its default and the warning says why.
+     *
+     * After the `composer require` above, so a skeleton without Sail has its runtimes on
+     * disk by now. A dry run has no vendor/ to look in and assumes the runtime exists.
+     *
+     * @return list<string>
+     */
+    private function runtimeOption(): array
+    {
+        $version = $this->installerOption->phpMinorVersion();
+
+        if ($this->processRunner->isDryRun() || is_dir($this->installerOption->targetPath.'/vendor/laravel/sail/runtimes/'.$version)) {
+            return ['--php='.$version];
+        }
+
+        warning(sprintf('Sail does not ship a PHP %s runtime — keeping its default runtime.', $version));
+
+        return [];
     }
 
     private function syncDatabaseBlockToEnvExample(): void

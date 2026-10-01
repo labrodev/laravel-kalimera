@@ -8,7 +8,7 @@ use JsonException;
 
 /**
  * Everything a failed run leaves behind for `--continue`, in one file: the answers the
- * plan was built from, the steps that already ran, and the last healthy composer.json.
+ * plan was built from and the steps that already ran.
  *
  * They used to live apart — the answers in .kalimera.json, the steps in
  * .kalimera-steps.json, the manifest in the system temp directory — with a different
@@ -87,22 +87,6 @@ readonly class RunStateFile
         $state['completedSteps'] = [...$steps, $step];
 
         $this->write($state);
-    }
-
-    public function composerSnapshot(): ?string
-    {
-        $snapshot = $this->read()['composerSnapshot'] ?? null;
-
-        return is_string($snapshot) && $snapshot !== '' ? $snapshot : null;
-    }
-
-    public function saveComposerSnapshot(string $contents): void
-    {
-        if ($this->composerSnapshot() === $contents) {
-            return;
-        }
-
-        $this->write(['composerSnapshot' => $contents] + $this->read());
     }
 
     public function forget(): void

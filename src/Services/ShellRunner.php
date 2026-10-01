@@ -48,8 +48,8 @@ readonly class ShellRunner implements ProcessRunner
      */
     public function runCommand(array $command, ?string $cwd = null, ?float $timeout = null, int $attempts = 1, bool $replayTail = true): void
     {
-        // Transient container filesystem or network hiccups have failed otherwise-sound
-        // composer commands mid-scaffold; a delayed retry absorbs them.
+        // For callers that pass NETWORK_ATTEMPTS: a download can fail transiently, and a
+        // delayed retry is cheap next to restarting the scaffold.
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             try {
                 // Only the last attempt replays the tail. An earlier one has the retry
@@ -90,7 +90,7 @@ readonly class ShellRunner implements ProcessRunner
             return;
         }
 
-        $process = new Process(command: $command, cwd: $cwd);
+        $process = new Process(command: $this->spawnable(command: $command, cwd: $cwd), cwd: $cwd);
         $process->setTimeout($timeout);
 
         $this->commandOutputPrinter->begin();
@@ -99,11 +99,8 @@ readonly class ShellRunner implements ProcessRunner
         $aborted = null;
 
         try {
-            // Deliberately no TTY passthrough: on macOS a TTY-mode wait() interrupted by
-            // a signal misreports successful commands as failed, which made retries
-            // re-run (and race) commands that had already succeeded. Streamed pipes give
-            // reliable exit codes and a full transcript; the "TTY mode" warning compose
-            // prints is cosmetic.
+            // Deliberately no TTY passthrough: streamed pipes give a full transcript and an
+            // exit code to read, and the "TTY mode" warning compose prints is cosmetic.
             //
             // Polling rather than run(): isRunning() drains the pipes and fires the
             // callback, so the loop keeps the progress line moving through the long
@@ -186,7 +183,21 @@ readonly class ShellRunner implements ProcessRunner
      */
     public function probe(array $command, ?string $cwd = null): bool
     {
-        return $this->quietly(command: $command, cwd: $cwd, printable: $this->printable(command: $command, cwd: $cwd));
+        return $this->quietly(command: $command, cwd: $cwd, printable: $this->printable(command: $command, cwd: $cwd))?->isSuccessful() ?? false;
+    }
+
+    /**
+     * @param  list<string>  $command
+     */
+    public function ask(array $command, ?string $cwd = null): ?string
+    {
+        $process = $this->quietly(command: $command, cwd: $cwd, printable: $this->printable(command: $command, cwd: $cwd));
+
+        if ($process === null || ! $process->isSuccessful()) {
+            return null;
+        }
+
+        return trim($process->getOutput());
     }
 
     /**
@@ -208,15 +219,15 @@ readonly class ShellRunner implements ProcessRunner
             return false;
         }
 
-        return $this->quietly(command: $command, cwd: $cwd, printable: $printable);
+        return $this->quietly(command: $command, cwd: $cwd, printable: $printable)?->isSuccessful() ?? false;
     }
 
     /**
      * @param  list<string>  $command
      */
-    private function quietly(array $command, string $printable, ?string $cwd): bool
+    private function quietly(array $command, string $printable, ?string $cwd): ?Process
     {
-        $process = new Process(command: $command, cwd: $cwd);
+        $process = new Process(command: $this->spawnable(command: $command, cwd: $cwd), cwd: $cwd);
         $process->setTimeout($this->quietTimeoutSeconds);
 
         try {
@@ -227,13 +238,12 @@ readonly class ShellRunner implements ProcessRunner
             // non-zero exit — both mean "it did not work, keep going".
             $this->transcriptLogger?->quietAborted(printable: $printable, reason: $throwable->getMessage());
 
-            return false;
+            return null;
         }
 
-        $success = $process->isSuccessful();
-        $this->transcriptLogger?->quietCommand(printable: $printable, success: $success);
+        $this->transcriptLogger?->quietCommand(printable: $printable, success: $process->isSuccessful());
 
-        return $success;
+        return $process;
     }
 
     public function applyFileChange(string $description, Closure $action): void
@@ -248,11 +258,37 @@ readonly class ShellRunner implements ProcessRunner
 
         $action();
 
-        // Settle before the next command: a container reading a host-renamed file too
-        // quickly can see it empty through the macOS VirtioFS mount.
-        sleep(1);
-
         info('· '.$description);
+    }
+
+    /**
+     * A relative program path is resolved against the working directory before it reaches
+     * proc_open, because on macOS it runs twice otherwise. proc_open hands an array command
+     * to posix_spawn, which resolves `./vendor/bin/sail` against the *parent's* directory,
+     * reports ENOENT — and the child, spawned into the right directory, executes it anyway.
+     * Symfony Process reads the reported failure as "not started" and falls back to
+     * `exec ./vendor/bin/sail …` through a shell, which runs it a second time, concurrently.
+     *
+     * Measured: 10 `sail php` calls through Process executed 20 times with the relative
+     * path and 10 times with the absolute one; plain proc_open returned false for a command
+     * that demonstrably ran. Every sail command the scaffold issued ran as two racing
+     * copies — two composers rewriting composer.json, two `migrate`s creating the same
+     * table, two publishes creating the same directory.
+     *
+     * @param  list<string>  $command
+     * @return list<string>
+     */
+    private function spawnable(array $command, ?string $cwd): array
+    {
+        $program = $command[0] ?? '';
+
+        if ($cwd === null || ! str_contains($program, '/') || str_starts_with($program, '/')) {
+            return $command;
+        }
+
+        $command[0] = rtrim($cwd, '/').'/'.(str_starts_with($program, './') ? substr($program, 2) : $program);
+
+        return $command;
     }
 
     /**

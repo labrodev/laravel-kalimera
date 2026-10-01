@@ -159,7 +159,7 @@ it('gives up when the migration keeps failing after the database was recreated',
 });
 
 // The retry budget exists for a database that has not finished booting, and a wrapper
-// around the runner that throws before any command reported anything — the manifest guard,
+// around the runner that throws before any command reported anything — a failed probe,
 // a file write — carries no output to classify. Reading that as "the server answered and
 // refused" would spend the budget on the one case it was reserved for.
 it('treats a failure that carried no command output as a database that is not up yet', function (): void {
